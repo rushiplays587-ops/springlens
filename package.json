@@ -14,7 +14,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "start": "node dist/cli.js"
+    "start": "node dist/cli.js",
+    "test": "tsc && node --test dist/build.test.js"
   },
   "engines": {
     "node": ">=18"

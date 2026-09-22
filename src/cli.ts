@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { buildRepoModel } from "./build.js";
+import { renderMarkdownReport } from "./report.js";
 
 const VERSION = "0.1.0";
 
@@ -45,9 +47,17 @@ function main(argv: string[]): void {
 
   console.log(`SpringLens v${VERSION}`);
   console.log(`Scanning: ${repoPath}`);
+
+  const model = buildRepoModel(repoPath);
+  const report = renderMarkdownReport(model);
+
+  const outputPath = resolve(repoPath, "springlens-report.md");
+  writeFileSync(outputPath, report, "utf-8");
+
+  console.log(`Found ${model.classes.length} Spring-annotated classes.`);
+  console.log(`Report written to: ${outputPath}`);
   console.log(
-    "Structural analysis (controllers/services/repositories/entities), dependency-risk report, " +
-      "and codebase Q&A are coming in upcoming sprints — this is the v0.1 CLI skeleton."
+    "Dependency-risk analysis and codebase Q&A are coming in upcoming sprints."
   );
 }
 

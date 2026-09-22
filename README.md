@@ -12,9 +12,11 @@ version-upgrade breaking changes, because that's the only stack it's built for.
 
 ## Status
 
-**v0.1 — early skeleton.** The CLI runs and validates a target repo; the actual
-analysis (structural map, dependency-risk report, codebase Q&A) is being built
-sprint by sprint. See [Roadmap](#roadmap) below.
+**v0.1 — structural extraction works.** Point it at a Spring Boot repo and it
+writes a Markdown architecture map: every controller/service/repository/entity
+it found, each controller's real endpoints, and who depends on whom. AI
+narrative, dependency-risk analysis, and codebase Q&A are still coming — see
+[Roadmap](#roadmap).
 
 ## Usage
 
@@ -22,12 +24,29 @@ sprint by sprint. See [Roadmap](#roadmap) below.
 npm install
 npm run build
 npm start -- ./path-to-your-spring-boot-repo
+# writes springlens-report.md inside that repo
+```
+
+## How the extraction works
+
+Spring's structure is almost entirely expressed through annotations
+(`@RestController`, `@Service`, `@Autowired`, `@GetMapping`, ...), which are
+regular and predictable — so v1 uses careful annotation-driven text scanning
+rather than a full Java AST parser. Comments are stripped before scanning (so
+an example annotation mentioned in a comment can't be picked up as real code);
+string literals are left intact (so real path values inside annotations
+survive). This is a deliberate v1 tradeoff, not an oversight — see the doc
+comment at the top of `src/parser.ts` for its known limitations and when a
+real AST parser would be worth the added complexity.
+
+```bash
+npm test   # runs the fixture-based regression suite in src/build.test.ts
 ```
 
 ## Roadmap
 
 - [x] **Sprint 0** — project scaffold, CLI skeleton
-- [ ] **Sprint 1** — structural extraction: controllers → services → repositories →
+- [x] **Sprint 1** — structural extraction: controllers → services → repositories →
       entities, bean-wiring graph (static analysis, no AI yet)
 - [ ] **Sprint 2** — AI narrative layer: plain-English explanations of each module
 - [ ] **Sprint 3** — dependency-risk report: outdated/vulnerable Maven/Gradle
