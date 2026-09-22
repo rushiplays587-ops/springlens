@@ -52,6 +52,40 @@ function renderClass(cls: ClassInfo): string {
  * Spring "kind" (Controllers, Services, ...), each listing its classes with
  * their endpoints (controllers only) and resolved dependencies.
  */
+function renderDependencyRiskSection(model: RepoModel): string[] {
+  const lines: string[] = [];
+  lines.push(`## Dependency risk`);
+  lines.push("");
+  lines.push(
+    "_Checked against a small curated list of well-established issues " +
+      "(e.g. Log4Shell's fixed-version boundary, Spring Boot's published " +
+      "end-of-life) — not a live vulnerability database. Run a real scanner " +
+      "(OWASP dependency-check, Snyk, GitHub Dependabot) for full coverage._"
+  );
+  lines.push("");
+
+  if (model.dependencies.length === 0) {
+    lines.push("No pom.xml or build.gradle(.kts) found at the repo root — skipped.");
+    lines.push("");
+    return lines;
+  }
+
+  if (model.riskFindings.length === 0) {
+    lines.push(`Scanned ${model.dependencies.length} dependencies — nothing flagged.`);
+    lines.push("");
+    return lines;
+  }
+
+  for (const finding of model.riskFindings) {
+    const marker = finding.severity === "critical" ? "🔴 critical" : "🟡 advisory";
+    lines.push(
+      `- **${marker}** \`${finding.dependency.groupId}:${finding.dependency.artifactId}\` — ${finding.message}`
+    );
+  }
+  lines.push("");
+  return lines;
+}
+
 export function renderMarkdownReport(model: RepoModel): string {
   const lines: string[] = [];
   lines.push(`# SpringLens architecture map`);
@@ -59,6 +93,7 @@ export function renderMarkdownReport(model: RepoModel): string {
   lines.push(`Scanned: \`${model.rootPath}\``);
   lines.push(`Classes found: ${model.classes.length}`);
   lines.push("");
+  lines.push(...renderDependencyRiskSection(model));
 
   if (model.classes.length === 0) {
     lines.push(

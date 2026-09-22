@@ -57,6 +57,9 @@ async function main(argv: string[]): Promise<void> {
 
   const model = buildRepoModel(repoPath);
   console.log(`Found ${model.classes.length} Spring-annotated classes.`);
+  console.log(
+    `Scanned ${model.dependencies.length} dependencies — ${model.riskFindings.length} flagged.`
+  );
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (noAi) {
@@ -77,7 +80,7 @@ async function main(argv: string[]): Promise<void> {
   writeFileSync(outputPath, report, "utf-8");
 
   console.log(`Report written to: ${outputPath}`);
-  console.log("Dependency-risk analysis and codebase Q&A are coming in upcoming sprints.");
+  console.log("Codebase Q&A is coming in an upcoming sprint.");
 }
 
 main(process.argv.slice(2)).catch((err) => {

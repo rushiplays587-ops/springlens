@@ -58,3 +58,23 @@ test("extracts controller endpoints with HTTP method, path, and method name", ()
   const postEndpoint = controller!.endpoints.find((e) => e.methodName === "createUser");
   assert.equal(postEndpoint?.httpMethod, "POST");
 });
+
+test("scans the fixture's pom.xml and flags its planted risky dependencies", () => {
+  const model = buildRepoModel(fixturePath);
+
+  // The fixture's dependencyManagement pins an ancient log4j-core (1.2.17)
+  // that is NOT actually declared as a used dependency — it must not appear
+  // in the parsed dependency list at all, let alone as a finding.
+  assert.ok(!model.dependencies.some((d) => d.version === "1.2.17"));
+
+  assert.equal(model.riskFindings.length, 2);
+  assert.equal(
+    model.riskFindings.find((f) => f.dependency.artifactId === "log4j-core")?.severity,
+    "critical"
+  );
+  assert.equal(
+    model.riskFindings.find((f) => f.dependency.artifactId === "spring-boot-starter-parent")
+      ?.severity,
+    "advisory"
+  );
+});

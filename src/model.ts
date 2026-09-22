@@ -24,7 +24,23 @@ export interface ClassInfo {
   narrative?: string; // plain-English explanation, populated by Sprint 2's AI layer when an API key is available
 }
 
+export interface Dependency {
+  groupId: string;
+  artifactId: string;
+  version: string | null; // null when version is inherited from a parent/BOM (common in Maven)
+}
+
+export type RiskSeverity = "critical" | "advisory";
+
+export interface RiskFinding {
+  dependency: Dependency;
+  severity: RiskSeverity;
+  message: string;
+}
+
 export interface RepoModel {
   rootPath: string;
   classes: ClassInfo[];
+  dependencies: Dependency[];
+  riskFindings: RiskFinding[];
 }

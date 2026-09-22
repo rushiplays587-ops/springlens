@@ -61,8 +61,9 @@ npm test   # runs the fixture-based regression suite in src/build.test.ts
       entities, bean-wiring graph (static analysis, no AI yet)
 - [x] **Sprint 2** — AI narrative layer: plain-English explanation per class,
       graceful fallback with no API key
-- [ ] **Sprint 3** — dependency-risk report: outdated/vulnerable Maven/Gradle
-      dependencies, flagged Spring Boot upgrade breaking changes
+- [x] **Sprint 3** — dependency-risk report: Maven/Gradle dependencies checked
+      against a small curated list of well-established issues (not a live CVE
+      feed — see the report's own disclosure text)
 - [ ] **Sprint 4** — "ask the codebase": Q&A grounded in the actual repo (RAG)
 - [ ] **Sprint 5** — polish: clean HTML report output, docs
 - [ ] **Sprint 6** — launch
