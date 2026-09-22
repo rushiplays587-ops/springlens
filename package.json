@@ -1,0 +1,26 @@
+{
+  "name": "springlens",
+  "version": "0.1.0",
+  "description": "AI-powered onboarding and dependency-risk analysis for legacy Java/Spring Boot codebases.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "springlens": "./dist/cli.js"
+  },
+  "main": "./dist/cli.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/cli.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0"
+  }
+}
