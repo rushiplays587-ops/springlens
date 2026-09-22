@@ -394,6 +394,7 @@ export function parseJavaFile(source: string, filePath: string): ClassInfo[] {
       annotations: annotations.map((a) => a.name),
       endpoints: kind === "controller" ? extractEndpoints(classBody) : [],
       dependsOn: extractDependencies(classBody, className),
+      rawBody: classBody.trim(),
     });
   }
 

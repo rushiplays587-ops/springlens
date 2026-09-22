@@ -25,6 +25,11 @@ function renderClass(cls: ClassInfo): string {
   lines.push(`### ${cls.name}`);
   lines.push(`*${cls.file}* — \`${cls.annotations.map((a) => "@" + a).join(" ")}\``);
 
+  if (cls.narrative) {
+    lines.push("");
+    lines.push(cls.narrative);
+  }
+
   if (cls.endpoints.length > 0) {
     lines.push("");
     lines.push("Endpoints:");

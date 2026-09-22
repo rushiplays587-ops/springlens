@@ -23,9 +23,20 @@ narrative, dependency-risk analysis, and codebase Q&A are still coming — see
 ```bash
 npm install
 npm run build
+
+# structural report only (no API key needed):
+npm start -- ./path-to-your-spring-boot-repo --no-ai
+
+# with AI narrative (plain-English explanation per class):
+export ANTHROPIC_API_KEY=sk-ant-...
 npm start -- ./path-to-your-spring-boot-repo
-# writes springlens-report.md inside that repo
+# writes springlens-report.md inside that repo either way
 ```
+
+Missing an API key isn't an error — SpringLens still writes the full
+structural report, just without the narrative text. A single class's AI call
+failing (rate limit, network blip) doesn't take down the run either; that one
+class just falls back to structural-only in the final report.
 
 ## How the extraction works
 
@@ -48,7 +59,8 @@ npm test   # runs the fixture-based regression suite in src/build.test.ts
 - [x] **Sprint 0** — project scaffold, CLI skeleton
 - [x] **Sprint 1** — structural extraction: controllers → services → repositories →
       entities, bean-wiring graph (static analysis, no AI yet)
-- [ ] **Sprint 2** — AI narrative layer: plain-English explanations of each module
+- [x] **Sprint 2** — AI narrative layer: plain-English explanation per class,
+      graceful fallback with no API key
 - [ ] **Sprint 3** — dependency-risk report: outdated/vulnerable Maven/Gradle
       dependencies, flagged Spring Boot upgrade breaking changes
 - [ ] **Sprint 4** — "ask the codebase": Q&A grounded in the actual repo (RAG)

@@ -20,6 +20,8 @@ export interface ClassInfo {
   annotations: string[];
   endpoints: Endpoint[];
   dependsOn: string[]; // names of other classes referenced via @Autowired / constructor injection
+  rawBody: string; // the class's body source (comments stripped) — fed to the AI narrative layer
+  narrative?: string; // plain-English explanation, populated by Sprint 2's AI layer when an API key is available
 }
 
 export interface RepoModel {
