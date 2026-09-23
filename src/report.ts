@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { ClassInfo, ClassKind, RepoModel } from "./model.js";
 
 const KIND_LABELS: Record<ClassKind, string> = {
@@ -53,11 +54,6 @@ function renderClass(cls: ClassInfo): string {
   return lines.join("\n");
 }
 
-/**
- * Renders the full architecture-map report as Markdown: one section per
- * Spring "kind" (Controllers, Services, ...), each listing its classes with
- * their endpoints (controllers only) and resolved dependencies.
- */
 function renderDependencyRiskSection(model: RepoModel): string[] {
   const lines: string[] = [];
   lines.push(`## Dependency risk`);
@@ -70,14 +66,25 @@ function renderDependencyRiskSection(model: RepoModel): string[] {
   );
   lines.push("");
 
-  if (model.dependencies.length === 0) {
+  if (model.buildFiles.length === 0) {
     lines.push("No pom.xml or build.gradle(.kts) found at the repo root — skipped.");
     lines.push("");
     return lines;
   }
 
+  if (model.dependencies.length === 0) {
+    lines.push(
+      `Read ${model.buildFiles.join(", ")} but found no dependencies to check ` +
+        "(map-style Gradle notation and multi-project Gradle builds are not supported yet)."
+    );
+    lines.push("");
+    return lines;
+  }
+
   if (model.riskFindings.length === 0) {
-    lines.push(`Scanned ${model.dependencies.length} dependencies — nothing flagged.`);
+    lines.push(
+      `Scanned ${model.dependencies.length} dependencies from ${model.buildFiles.join(", ")} — nothing flagged.`
+    );
     lines.push("");
     return lines;
   }
@@ -92,11 +99,18 @@ function renderDependencyRiskSection(model: RepoModel): string[] {
   return lines;
 }
 
+/**
+ * Renders the full architecture-map report as Markdown: one section per
+ * Spring "kind" (Controllers, Services, ...), each listing its classes with
+ * their endpoints (controllers only) and resolved dependencies. Only the
+ * scanned directory's name is printed, not its absolute path, so a report
+ * committed to a repo doesn't leak local usernames or folder layout.
+ */
 export function renderMarkdownReport(model: RepoModel): string {
   const lines: string[] = [];
   lines.push(`# SpringLens architecture map`);
   lines.push("");
-  lines.push(`Scanned: \`${model.rootPath}\``);
+  lines.push(`Scanned: \`${basename(model.rootPath)}\``);
   lines.push(`Classes found: ${model.classes.length}`);
   lines.push("");
   lines.push(...renderDependencyRiskSection(model));

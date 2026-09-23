@@ -1,49 +1,50 @@
-import { readdirSync, statSync } from "node:fs";
+import { lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-const EXCLUDED_DIRS = new Set([
-  "target",
-  "build",
-  "node_modules",
-  ".git",
-  "out",
-  "bin",
-]);
+// Never source, anywhere in the tree.
+const ALWAYS_EXCLUDED_DIRS = new Set(["target", "node_modules", ".git"]);
+
+// Build-output names at a project root, but also legitimate Java package
+// names (com.acme.build, com.acme.out) once we are inside a src/ tree.
+const BUILD_OUTPUT_DIRS = new Set(["build", "out", "bin"]);
 
 /**
  * Recursively finds all .java files under rootPath, skipping build output
- * and VCS directories so we only scan actual source.
+ * and VCS directories so we only scan actual source. Symbolic links are not
+ * followed (avoids loops and escaping the scanned tree).
  */
 export function findJavaFiles(rootPath: string): string[] {
   const results: string[] = [];
 
-  function walk(dir: string): void {
+  function walk(dir: string, insideSrc: boolean): void {
     let entries: string[];
     try {
-      entries = readdirSync(dir);
+      entries = readdirSync(dir).sort();
     } catch {
-      return; // unreadable directory (permissions, symlink loop, etc.) — skip it
+      return; // unreadable directory (permissions etc.) — skip it
     }
 
     for (const entry of entries) {
-      if (EXCLUDED_DIRS.has(entry)) continue;
+      if (ALWAYS_EXCLUDED_DIRS.has(entry)) continue;
 
       const fullPath = join(dir, entry);
       let stat;
       try {
-        stat = statSync(fullPath);
+        stat = lstatSync(fullPath);
       } catch {
         continue;
       }
+      if (stat.isSymbolicLink()) continue;
 
       if (stat.isDirectory()) {
-        walk(fullPath);
+        if (!insideSrc && BUILD_OUTPUT_DIRS.has(entry)) continue;
+        walk(fullPath, insideSrc || entry === "src");
       } else if (stat.isFile() && entry.endsWith(".java")) {
         results.push(fullPath);
       }
     }
   }
 
-  walk(rootPath);
+  walk(rootPath, false);
   return results;
 }

@@ -25,24 +25,41 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
+/** True when a version is a build property, range or other expression SpringLens cannot evaluate statically. */
+export function isUnresolvedVersion(version: string): boolean {
+  return /[${}\[\](),]/.test(version) || !/^\d/.test(version);
+}
+
 interface RiskRule {
   groupId: string;
-  artifactId: string;
+  artifactIds: string[];
+  /** One-line statement of what a safe version looks like, used when the version can't be resolved. */
+  hint: string;
   check(version: string): { severity: "critical" | "advisory"; message: string } | null;
 }
 
 const RISK_RULES: RiskRule[] = [
   {
     groupId: "org.apache.logging.log4j",
-    artifactId: "log4j-core",
+    artifactIds: ["log4j-core"],
+    hint: "it should be 2.17.1 or later (or 2.12.4 / 2.3.2 on the Java 7 / Java 6 lines)",
     check(version) {
+      // Apache publishes patched backports for older Java baselines: 2.12.4
+      // for Java 7 and 2.3.2 for Java 6. They are older than 2.17.1 but fixed.
+      const [major, minor] = version.split(/[-+]/)[0].split(".").map((n) => parseInt(n, 10) || 0);
+      const patchedBackport =
+        major === 2 &&
+        ((minor === 12 && compareVersions(version, "2.12.4") >= 0) ||
+          (minor === 3 && compareVersions(version, "2.3.2") >= 0));
+      if (patchedBackport) return null;
+
       if (compareVersions(version, "2.17.1") < 0) {
         return {
           severity: "critical",
           message:
             `log4j-core ${version} is older than 2.17.1 — within the "Log4Shell" ` +
             "family of vulnerabilities (CVE-2021-44228 and related). Upgrade to " +
-            "2.17.1 or later.",
+            "2.17.1 or later (or 2.12.4 / 2.3.2 if you are stuck on Java 7 / Java 6).",
         };
       }
       return null;
@@ -50,7 +67,8 @@ const RISK_RULES: RiskRule[] = [
   },
   {
     groupId: "org.springframework.boot",
-    artifactId: "spring-boot-starter-parent",
+    artifactIds: ["spring-boot-starter-parent", "spring-boot-gradle-plugin"],
+    hint: "Spring Boot 1.x and 2.x are both past open-source end-of-life",
     check(version) {
       const major = parseInt(version.split(".")[0], 10);
       if (major === 1) {
@@ -86,11 +104,23 @@ export function assessDependencies(deps: Dependency[]): RiskFinding[] {
     if (!dep.version) continue; // version managed externally (parent/BOM) — nothing to check here
 
     for (const rule of RISK_RULES) {
-      if (rule.groupId === dep.groupId && rule.artifactId === dep.artifactId) {
-        const result = rule.check(dep.version);
-        if (result) {
-          findings.push({ dependency: dep, severity: result.severity, message: result.message });
-        }
+      if (rule.groupId !== dep.groupId || !rule.artifactIds.includes(dep.artifactId)) continue;
+
+      if (isUnresolvedVersion(dep.version)) {
+        findings.push({
+          dependency: dep,
+          severity: "advisory",
+          message:
+            `Version \`${dep.version}\` is a build property or range that SpringLens ` +
+            `can't resolve — check by hand that ${dep.artifactId} is on a safe release ` +
+            `(${rule.hint}).`,
+        });
+        continue;
+      }
+
+      const result = rule.check(dep.version);
+      if (result) {
+        findings.push({ dependency: dep, severity: result.severity, message: result.message });
       }
     }
   }
@@ -98,16 +128,34 @@ export function assessDependencies(deps: Dependency[]): RiskFinding[] {
   return findings;
 }
 
+/** Module directory names declared in a pom's <modules> block. */
+export function parsePomModules(xml: string): string[] {
+  const clean = xml.replace(/<!--[\s\S]*?-->/g, "");
+  const block = clean.match(/<modules>([\s\S]*?)<\/modules>/)?.[1] ?? "";
+  return [...block.matchAll(/<module>([^<]+)<\/module>/g)].map((m) => m[1].trim());
+}
+
 /**
  * Extracts <dependency> entries from a Maven pom.xml, deliberately excluding
  * anything inside <dependencyManagement> — those are version-pinning
  * declarations, not dependencies actually used by this module, and
- * reporting them as risks would be misleading. The project's parent
- * (<parent>...</parent>, most commonly spring-boot-starter-parent) is
- * included too since that's where a Spring Boot project's own version
- * usually lives.
+ * reporting them as risks would be misleading. XML comments are ignored, and
+ * simple ${property} versions are resolved from the pom's own <properties>
+ * block. The project's parent (<parent>...</parent>, most commonly
+ * spring-boot-starter-parent) is included too since that's where a Spring
+ * Boot project's own version usually lives.
  */
-export function parsePomDependencies(xml: string): Dependency[] {
+export function parsePomDependencies(rawXml: string): Dependency[] {
+  const xml = rawXml.replace(/<!--[\s\S]*?-->/g, "");
+
+  const properties = new Map<string, string>();
+  const propsBlock = xml.match(/<properties>([\s\S]*?)<\/properties>/)?.[1] ?? "";
+  for (const p of propsBlock.matchAll(/<([\w.\-]+)>([^<]*)<\/\1>/g)) {
+    properties.set(p[1], p[2].trim());
+  }
+  const resolve = (v: string | undefined): string | undefined =>
+    v?.replace(/\$\{([^}]+)\}/g, (whole, name) => properties.get(name) ?? whole);
+
   const withoutDependencyManagement = xml.replace(
     /<dependencyManagement>[\s\S]*?<\/dependencyManagement>/g,
     ""
@@ -121,7 +169,7 @@ export function parsePomDependencies(xml: string): Dependency[] {
     const block = match[1];
     const groupId = block.match(/<groupId>([^<]+)<\/groupId>/)?.[1]?.trim();
     const artifactId = block.match(/<artifactId>([^<]+)<\/artifactId>/)?.[1]?.trim();
-    const version = block.match(/<version>([^<]+)<\/version>/)?.[1]?.trim();
+    const version = resolve(block.match(/<version>([^<]+)<\/version>/)?.[1]?.trim());
     if (groupId && artifactId) {
       deps.push({ groupId, artifactId, version: version ?? null });
     }
@@ -131,7 +179,7 @@ export function parsePomDependencies(xml: string): Dependency[] {
   if (parentBlock) {
     const groupId = parentBlock.match(/<groupId>([^<]+)<\/groupId>/)?.[1]?.trim();
     const artifactId = parentBlock.match(/<artifactId>([^<]+)<\/artifactId>/)?.[1]?.trim();
-    const version = parentBlock.match(/<version>([^<]+)<\/version>/)?.[1]?.trim();
+    const version = resolve(parentBlock.match(/<version>([^<]+)<\/version>/)?.[1]?.trim());
     if (groupId && artifactId && version) {
       deps.push({ groupId, artifactId, version });
     }
@@ -141,22 +189,34 @@ export function parsePomDependencies(xml: string): Dependency[] {
 }
 
 /**
- * Best-effort extraction of Gradle's short-form dependency declarations
- * (e.g. `implementation 'group:artifact:version'` or the double-quoted /
- * parenthesised variants). Gradle build files are Groovy/Kotlin scripts,
- * not data — this only catches the conventional string-notation form, which
- * covers the large majority of real Gradle dependency declarations, but a
- * dependency declared via the map-style notation (`group: 'x', name: 'y', ...`)
- * or built up dynamically won't be picked up.
+ * Best-effort extraction from a Gradle build script: the conventional
+ * string-notation dependencies (`implementation 'group:artifact:version'`,
+ * double-quoted and parenthesised Kotlin-DSL variants, legacy `compile` /
+ * `testCompile` / `classpath` configurations) plus the Spring Boot plugin
+ * version. Comments are ignored. Gradle files are Groovy/Kotlin scripts, not
+ * data — a dependency declared via the map-style notation
+ * (`group: 'x', name: 'y', ...`) or built up dynamically won't be picked up,
+ * and multi-project Gradle builds are not followed.
  */
 export function parseGradleDependencies(content: string): Dependency[] {
+  const clean = content.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
   const deps: Dependency[] = [];
-  const regex =
-    /\b(?:implementation|api|compileOnly|runtimeOnly|testImplementation|annotationProcessor)\s*[( ]\s*['"]([^:'"]+):([^:'"]+):([^:'")\s]+)['"]/g;
 
+  const depRegex =
+    /\b(?:implementation|api|compile|compileOnly|runtimeOnly|runtime|testImplementation|testCompile|testCompileOnly|testRuntimeOnly|testRuntime|annotationProcessor|classpath|developmentOnly|kapt)\s*[( ]\s*['"]([^:'"\s]+):([^:'"\s]+)(?::([^:'"\s)@]+))?[^'"]*['"]/g;
   let match: RegExpExecArray | null;
-  while ((match = regex.exec(content)) !== null) {
-    deps.push({ groupId: match[1], artifactId: match[2], version: match[3] });
+  while ((match = depRegex.exec(clean)) !== null) {
+    deps.push({ groupId: match[1], artifactId: match[2], version: match[3] ?? null });
+  }
+
+  const pluginRegex =
+    /\bid\s*\(?\s*['"]org\.springframework\.boot['"]\s*\)?\s*version\s*\(?\s*['"]([^'"]+)['"]/g;
+  while ((match = pluginRegex.exec(clean)) !== null) {
+    deps.push({
+      groupId: "org.springframework.boot",
+      artifactId: "spring-boot-gradle-plugin",
+      version: match[1],
+    });
   }
 
   return deps;

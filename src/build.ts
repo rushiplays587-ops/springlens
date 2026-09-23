@@ -1,24 +1,66 @@
 import { existsSync, readFileSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { relative, resolve, sep } from "node:path";
 import { findJavaFiles } from "./scanner.js";
 import { parseJavaFile } from "./parser.js";
 import { ClassInfo, Dependency, RepoModel } from "./model.js";
-import { assessDependencies, parseGradleDependencies, parsePomDependencies } from "./depscan.js";
+import {
+  assessDependencies,
+  parseGradleDependencies,
+  parsePomDependencies,
+  parsePomModules,
+} from "./depscan.js";
 
-function loadDependencies(rootPath: string): Dependency[] {
-  const pomPath = resolve(rootPath, "pom.xml");
-  if (existsSync(pomPath)) {
-    return parsePomDependencies(readFileSync(pomPath, "utf-8"));
+const MAX_MODULE_DEPTH = 5;
+
+/** Collects a pom and, recursively, the poms of the modules it declares (kept inside rootPath). */
+function collectPoms(rootPath: string, pomPath: string, seen: Set<string>, depth: number): void {
+  if (seen.has(pomPath) || depth > MAX_MODULE_DEPTH || !existsSync(pomPath)) return;
+  seen.add(pomPath);
+
+  const xml = readFileSync(pomPath, "utf-8");
+  const moduleBase = resolve(pomPath, "..");
+  for (const moduleName of parsePomModules(xml)) {
+    const modulePom = resolve(moduleBase, moduleName, "pom.xml");
+    const rel = relative(rootPath, modulePom);
+    if (rel.startsWith("..")) continue; // never follow a <module> out of the scanned repo
+    collectPoms(rootPath, modulePom, seen, depth + 1);
+  }
+}
+
+function loadDependencies(rootPath: string): { dependencies: Dependency[]; buildFiles: string[] } {
+  const buildFiles: string[] = [];
+  const dependencies: Dependency[] = [];
+  const seenDeps = new Set<string>();
+  const addAll = (deps: Dependency[]) => {
+    for (const d of deps) {
+      const key = `${d.groupId}:${d.artifactId}:${d.version ?? ""}`;
+      if (seenDeps.has(key)) continue;
+      seenDeps.add(key);
+      dependencies.push(d);
+    }
+  };
+
+  const rootPom = resolve(rootPath, "pom.xml");
+  if (existsSync(rootPom)) {
+    const poms = new Set<string>();
+    collectPoms(rootPath, rootPom, poms, 0);
+    for (const pom of poms) {
+      buildFiles.push(relative(rootPath, pom).split(sep).join("/"));
+      addAll(parsePomDependencies(readFileSync(pom, "utf-8")));
+    }
+    return { dependencies, buildFiles };
   }
 
   for (const gradleFile of ["build.gradle", "build.gradle.kts"]) {
     const gradlePath = resolve(rootPath, gradleFile);
     if (existsSync(gradlePath)) {
-      return parseGradleDependencies(readFileSync(gradlePath, "utf-8"));
+      buildFiles.push(gradleFile);
+      addAll(parseGradleDependencies(readFileSync(gradlePath, "utf-8")));
+      break;
     }
   }
 
-  return [];
+  return { dependencies, buildFiles };
 }
 
 /**
@@ -39,7 +81,7 @@ export function buildRepoModel(rootPath: string): RepoModel {
     } catch {
       continue; // unreadable file — skip rather than fail the whole scan
     }
-    const relPath = relative(rootPath, file);
+    const relPath = relative(rootPath, file).split(sep).join("/");
     const classesInFile = parseJavaFile(source, relPath);
     allClasses.push(...classesInFile);
   }
@@ -50,8 +92,8 @@ export function buildRepoModel(rootPath: string): RepoModel {
     cls.dependsOn = cls.dependsOn.filter((dep) => knownClassNames.has(dep));
   }
 
-  const dependencies = loadDependencies(rootPath);
+  const { dependencies, buildFiles } = loadDependencies(rootPath);
   const riskFindings = assessDependencies(dependencies);
 
-  return { rootPath, classes: allClasses, dependencies, riskFindings };
+  return { rootPath, classes: allClasses, dependencies, buildFiles, riskFindings };
 }

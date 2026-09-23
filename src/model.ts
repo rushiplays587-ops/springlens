@@ -43,5 +43,6 @@ export interface RepoModel {
   rootPath: string;
   classes: ClassInfo[];
   dependencies: Dependency[];
+  buildFiles: string[]; // build files that were read (pom.xml, module poms, build.gradle[.kts]); empty if none found
   riskFindings: RiskFinding[];
 }
