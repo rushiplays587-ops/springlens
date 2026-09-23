@@ -3,7 +3,15 @@ import { existsSync, lstatSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { buildRepoModel } from "./build.js";
 import { renderMarkdownReport } from "./report.js";
-import { MAX_BODY_CHARS, NARRATION_MODEL, narrateAll } from "./narrate.js";
+import Anthropic from "@anthropic-ai/sdk";
+import { MAX_BODY_CHARS, NARRATION_MODEL, answerQuestion, narrateAll } from "./narrate.js";
+import {
+  DEFAULT_RESULT_COUNT,
+  MAX_QUESTION_CHARS,
+  buildIndex,
+  formatLocalAnswer,
+  rank,
+} from "./ask.js";
 
 const VERSION = "0.1.0";
 const KNOWN_FLAGS = new Set(["--ai", "--no-ai", "--help", "-h"]);
@@ -14,9 +22,14 @@ Onboarding and dependency-risk analysis for Java/Spring Boot codebases.
 
 Usage:
   springlens <path-to-repo> [--ai]
+  springlens ask <path-to-repo> "<question>" [--ai]
+  springlens ask <path-to-repo> [--ai] -- "-Xmx flag"   (a question starting with "-")
 
-Example:
+Examples:
   springlens ./my-legacy-service
+  springlens ask ./my-legacy-service "where is user login handled"
+
+(To scan a directory literally named "ask", write ./ask.)
 
 By default SpringLens runs entirely locally and writes a structural report
 (springlens-report.md inside the repo). Nothing leaves your machine.
@@ -25,11 +38,83 @@ By default SpringLens runs entirely locally and writes a structural report
        API. This SENDS class source code (up to ${MAX_BODY_CHARS} characters per class,
        including string literals such as URLs and config values) to Anthropic.
        Requires the ANTHROPIC_API_KEY environment variable.
+
+ask    answers a question about the repo. By default it is local: it ranks the
+       repo's classes by keyword relevance and prints the best matches, and
+       makes no AI answer. With --ai it also sends your question plus the source
+       of only the top ${DEFAULT_RESULT_COUNT} matching classes (up to ${MAX_BODY_CHARS} characters each,
+       string literals included) to the Anthropic API for a written answer.
 `);
 }
 
+/** Resolves and validates the repo directory; prints the error and sets the exit code on failure. */
+function checkRepoDir(target: string): string | null {
+  const repoPath = resolve(target);
+  if (!existsSync(repoPath)) {
+    console.error(`SpringLens: path not found — ${repoPath}`);
+    process.exitCode = 1;
+    return null;
+  }
+  if (!statSync(repoPath).isDirectory()) {
+    console.error(`SpringLens: ${repoPath} is a file — point SpringLens at the repo's directory.`);
+    process.exitCode = 1;
+    return null;
+  }
+  return repoPath;
+}
+
+async function runAsk(positional: string[], wantsAi: boolean): Promise<void> {
+  const [, target, ...questionWords] = positional;
+  const question = questionWords.join(" ").trim();
+  if (!target || !question) {
+    console.error('SpringLens: usage — springlens ask <path-to-repo> "<question>" [--ai]');
+    process.exitCode = 2;
+    return;
+  }
+  if (question.length > MAX_QUESTION_CHARS) {
+    console.error(`SpringLens: question is ${question.length} characters; the limit is ${MAX_QUESTION_CHARS}.`);
+    process.exitCode = 2;
+    return;
+  }
+  const repoPath = checkRepoDir(target);
+  if (!repoPath) return;
+
+  const model = buildRepoModel(repoPath);
+  const results = rank(buildIndex(model.classes), question, DEFAULT_RESULT_COUNT);
+  console.log(formatLocalAnswer(question, results, model.classes, wantsAi));
+
+  if (!wantsAi) return;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    console.log("\n--ai given but ANTHROPIC_API_KEY is not set — local results only.");
+    return;
+  }
+  if (results.length === 0) {
+    console.log("\n--ai: nothing retrieved, so nothing was sent to the Anthropic API.");
+    return;
+  }
+  console.log(
+    `\n--ai: sending your question and the source of ${results.length} classes ` +
+      `(${results.map((r) => r.cls.name).join(", ")}; up to ${MAX_BODY_CHARS} characters each, ` +
+      `string literals included) to the Anthropic API using model ${NARRATION_MODEL}.`
+  );
+  const answer = await answerQuestion(
+    new Anthropic({ apiKey }),
+    question,
+    results.map((r) => r.cls),
+    model.classes.length
+  );
+  console.log(answer ? `\nAI answer:\n${answer}` : "\nNo AI answer was produced; see the local results above.");
+}
+
 async function main(argv: string[]): Promise<void> {
-  const flags = argv.filter((a) => a.startsWith("-"));
+  // Everything after a bare "--" is positional; a dash-led argument containing whitespace is
+  // a quoted sentence (e.g. a question), not an option.
+  const dashDash = argv.indexOf("--");
+  const optionArgs = dashDash === -1 ? argv : argv.slice(0, dashDash);
+  const trailing = dashDash === -1 ? [] : argv.slice(dashDash + 1);
+  const isOption = (a: string) => a.startsWith("-") && !/\s/.test(a);
+  const flags = optionArgs.filter(isOption);
   const unknown = flags.filter((f) => !KNOWN_FLAGS.has(f));
   if (unknown.length > 0) {
     console.error(`SpringLens: unknown option ${unknown.join(", ")}. Run with --help for usage.`);
@@ -42,24 +127,20 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
 
-  const target = argv.find((a) => !a.startsWith("-"));
+  const positional = [...optionArgs.filter((a) => !isOption(a)), ...trailing];
+  if (positional[0] === "ask" && !flags.includes("--help") && !flags.includes("-h")) {
+    await runAsk(positional, flags.includes("--ai"));
+    return;
+  }
+
+  const target = positional[0];
   if (!target || flags.includes("--help") || flags.includes("-h")) {
     printUsage();
     return;
   }
 
-  const repoPath = resolve(target);
-
-  if (!existsSync(repoPath)) {
-    console.error(`SpringLens: path not found — ${repoPath}`);
-    process.exitCode = 1;
-    return;
-  }
-  if (!statSync(repoPath).isDirectory()) {
-    console.error(`SpringLens: ${repoPath} is a file — point SpringLens at the repo's directory.`);
-    process.exitCode = 1;
-    return;
-  }
+  const repoPath = checkRepoDir(target);
+  if (!repoPath) return;
 
   const outputPath = resolve(repoPath, "springlens-report.md");
   if (existsSync(outputPath) && lstatSync(outputPath).isSymbolicLink()) {
@@ -113,7 +194,7 @@ async function main(argv: string[]): Promise<void> {
   writeFileSync(outputPath, report, "utf-8");
 
   console.log(`Report written to: ${outputPath}`);
-  console.log("Codebase Q&A is coming in an upcoming sprint.");
+  console.log(`Ask a question about the codebase: springlens ask ${target} "<question>"`);
 }
 
 main(process.argv.slice(2)).catch((err) => {
