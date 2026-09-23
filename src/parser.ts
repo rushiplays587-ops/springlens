@@ -5,25 +5,57 @@ import { ClassInfo, ClassKind, Endpoint } from "./model.js";
  *
  * Spring's structure is almost entirely expressed through annotations
  * (@RestController, @Service, @Autowired, @GetMapping, ...), which are
- * regular, predictable tokens — so a careful text-based scan (after stripping
- * comments/strings, so annotation-shaped text inside them can't false-positive)
- * gets correct results for the common cases without the complexity of a real
- * parser. Deliberately documented limitation, not an oversight: deeply nested
- * inner classes are attributed to their enclosing class, and unusual
- * formatting (e.g. annotations split mid-token across lines in strange ways)
- * can be missed. Upgrading to a real AST parser (e.g. java-parser) is a
- * reasonable future sprint if this stops being accurate enough in practice.
+ * regular, predictable tokens — so a careful text-based scan gets correct
+ * results for the common cases without the complexity of a real parser.
+ *
+ * Two views of each file are kept in lockstep (same length, same indexes):
+ *  - the "stripped" text: comments blanked, string literals intact, so real
+ *    annotation values like @GetMapping("/users") can be read;
+ *  - the "masked" text: additionally, the inside of every string/char
+ *    literal is blanked. All structural scanning (braces, parens, annotation
+ *    names) runs on the masked text, so a "}" or "@GetMapping(...)" inside a
+ *    string can never be mistaken for code; values are then read from the
+ *    stripped text at the same indexes.
+ *
+ * Known v1 limitations (documented, not oversights): records and Kotlin/Groovy
+ * sources are not parsed; nested annotated classes are reported as their own
+ * entries (their text also remains inside the enclosing class body); classes
+ * sharing a simple name across packages are merged by name; @Bean-method
+ * parameter injection is not followed. Upgrading to a real AST parser (e.g.
+ * java-parser) is a reasonable future sprint if this stops being accurate
+ * enough in practice.
  */
 
 const KIND_BY_ANNOTATION: Record<string, ClassKind> = {
   RestController: "controller",
   Controller: "controller",
+  ControllerAdvice: "advice",
+  RestControllerAdvice: "advice",
   Service: "service",
   Repository: "repository",
   Entity: "entity",
+  MappedSuperclass: "entity",
+  Embeddable: "entity",
   Configuration: "configuration",
+  SpringBootApplication: "configuration",
   Component: "component",
+  Aspect: "component",
 };
+
+const SPRING_DATA_REPOSITORY_TYPES = new Set([
+  "Repository",
+  "CrudRepository",
+  "ListCrudRepository",
+  "PagingAndSortingRepository",
+  "ListPagingAndSortingRepository",
+  "JpaRepository",
+  "MongoRepository",
+  "ReactiveCrudRepository",
+  "ReactiveMongoRepository",
+  "R2dbcRepository",
+  "ElasticsearchRepository",
+  "JpaSpecificationExecutor",
+]);
 
 const MAPPING_ANNOTATIONS: Record<string, string> = {
   GetMapping: "GET",
@@ -31,7 +63,7 @@ const MAPPING_ANNOTATIONS: Record<string, string> = {
   PutMapping: "PUT",
   DeleteMapping: "DELETE",
   PatchMapping: "PATCH",
-  RequestMapping: "MAPPING",
+  RequestMapping: "ANY",
 };
 
 // Common JDK / java.* / generic collection types we never want to report as
@@ -65,17 +97,30 @@ const IGNORED_TYPE_NAMES = new Set([
   "HashMap",
   "HashSet",
   "Logger",
+  "extends",
+  "super",
+  "final",
+]);
+
+const MODIFIER_KEYWORDS = new Set([
+  "public",
+  "private",
+  "protected",
+  "static",
+  "final",
+  "abstract",
+  "strictfp",
 ]);
 
 /**
  * Blanks out comments (preserving line breaks, so later line/position
  * reasoning stays roughly aligned) so annotation-shaped text inside a
  * comment can't false-positive as real code. String/char literals are
- * passed through verbatim — deliberately not blanked, because we need the
- * actual quoted path values inside annotations like @GetMapping("/users")
- * to survive for extractPathFromArgs to read. The scanner still tracks
- * string/char boundaries so a "//" or "/*" that happens to appear inside a
- * string literal isn't mistaken for the start of a real comment.
+ * passed through verbatim — deliberately not blanked here, because we need
+ * the actual quoted path values inside annotations like @GetMapping("/users")
+ * to survive. The scanner still tracks string/char/text-block boundaries so
+ * a "//" or "/*" that happens to appear inside a literal isn't mistaken for
+ * the start of a real comment.
  */
 export function stripComments(source: string): string {
   let result = "";
@@ -108,10 +153,10 @@ export function stripComments(source: string): string {
       continue;
     }
 
-    if (c === '"') {
-      result += c;
-      i++;
-      while (i < n && source[i] !== '"') {
+    if (c === '"' && source.startsWith('"""', i)) {
+      result += '"""';
+      i += 3;
+      while (i < n && !source.startsWith('"""', i)) {
         if (source[i] === "\\") {
           result += source[i] + (source[i + 1] ?? "");
           i += 2;
@@ -121,16 +166,16 @@ export function stripComments(source: string): string {
         i++;
       }
       if (i < n) {
-        result += source[i];
-        i++;
+        result += '"""';
+        i += 3;
       }
       continue;
     }
 
-    if (c === "'") {
+    if (c === '"' || c === "'") {
       result += c;
       i++;
-      while (i < n && source[i] !== "'") {
+      while (i < n && source[i] !== c) {
         if (source[i] === "\\") {
           result += source[i] + (source[i + 1] ?? "");
           i += 2;
@@ -153,7 +198,74 @@ export function stripComments(source: string): string {
   return result;
 }
 
-/** Finds the index just past the matching ')' for a '(' at openParenIndex. */
+/**
+ * Returns text of identical length in which the inside of every string,
+ * char and text-block literal is replaced by spaces (newlines kept), so
+ * structural scanning can't be fooled by braces, parens or annotation-shaped
+ * text inside a literal.
+ */
+export function maskStrings(src: string): string {
+  const out: string[] = [];
+  const n = src.length;
+  let i = 0;
+
+  while (i < n) {
+    const c = src[i];
+
+    if (c === '"' && src.startsWith('"""', i)) {
+      out.push('"""');
+      i += 3;
+      while (i < n && !src.startsWith('"""', i)) {
+        if (src[i] === "\\") {
+          out.push(" ");
+          i++;
+          if (i < n) {
+            out.push(src[i] === "\n" ? "\n" : " ");
+            i++;
+          }
+          continue;
+        }
+        out.push(src[i] === "\n" ? "\n" : " ");
+        i++;
+      }
+      if (i < n) {
+        out.push('"""');
+        i += 3;
+      }
+      continue;
+    }
+
+    if (c === '"' || c === "'") {
+      out.push(c);
+      i++;
+      while (i < n && src[i] !== c && src[i] !== "\n") {
+        if (src[i] === "\\") {
+          out.push(" ");
+          i++;
+          if (i < n && src[i] !== "\n") {
+            out.push(" ");
+            i++;
+          }
+          continue;
+        }
+        out.push(" ");
+        i++;
+      }
+      if (i < n && src[i] === c) {
+        out.push(c);
+        i++;
+      }
+      continue;
+    }
+
+    out.push(c);
+    i++;
+  }
+
+  return out.join("");
+}
+
+/** Finds the index just past the matching ')' for a '(' at openParenIndex (masked text). */
 function findMatchingParen(src: string, openParenIndex: number): number {
   let depth = 0;
   for (let i = openParenIndex; i < src.length; i++) {
@@ -166,7 +278,7 @@ function findMatchingParen(src: string, openParenIndex: number): number {
   return src.length;
 }
 
-/** Finds the index just past the matching '}' for a '{' at openBraceIndex. */
+/** Finds the index just past the matching '}' for a '{' at openBraceIndex (masked text). */
 function findMatchingBrace(src: string, openBraceIndex: number): number {
   let depth = 0;
   for (let i = openBraceIndex; i < src.length; i++) {
@@ -181,24 +293,10 @@ function findMatchingBrace(src: string, openBraceIndex: number): number {
 
 interface RawAnnotation {
   name: string;
-  args: string; // raw text between the parens, "" if no parens
+  args: string; // raw text between the parens (string values intact), "" if no parens
   start: number;
   end: number;
 }
-
-/**
- * Scans backwards from `beforeIndex` collecting the contiguous run of
- * annotations immediately preceding it (skipping whitespace between them).
- */
-const MODIFIER_KEYWORDS = new Set([
-  "public",
-  "private",
-  "protected",
-  "static",
-  "final",
-  "abstract",
-  "strictfp",
-]);
 
 /** Reads the identifier ending at (and not including) `end`. */
 function wordEndingAt(src: string, end: number): { word: string; start: number } {
@@ -207,7 +305,16 @@ function wordEndingAt(src: string, end: number): { word: string; start: number }
   return { word: src.slice(k, end), start: k };
 }
 
-function collectAnnotationsBefore(src: string, beforeIndex: number): RawAnnotation[] {
+/**
+ * Scans backwards from `beforeIndex` collecting the contiguous run of
+ * annotations immediately preceding it (skipping whitespace between them).
+ * Structure is read from `masked`; annotation argument text from `orig`.
+ */
+function collectAnnotationsBefore(
+  masked: string,
+  orig: string,
+  beforeIndex: number
+): RawAnnotation[] {
   const annotations: RawAnnotation[] = [];
   let cursor = beforeIndex;
 
@@ -216,8 +323,8 @@ function collectAnnotationsBefore(src: string, beforeIndex: number): RawAnnotati
   // scan below isn't fooled into stopping at "public" and giving up.
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    while (cursor > 0 && /\s/.test(src[cursor - 1])) cursor--;
-    const { word, start } = wordEndingAt(src, cursor);
+    while (cursor > 0 && /\s/.test(masked[cursor - 1])) cursor--;
+    const { word, start } = wordEndingAt(masked, cursor);
     if (word && MODIFIER_KEYWORDS.has(word)) {
       cursor = start;
       continue;
@@ -227,34 +334,30 @@ function collectAnnotationsBefore(src: string, beforeIndex: number): RawAnnotati
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    // skip whitespace backwards
-    while (cursor > 0 && /\s/.test(src[cursor - 1])) cursor--;
+    while (cursor > 0 && /\s/.test(masked[cursor - 1])) cursor--;
 
-    if (src[cursor - 1] !== ")" && !/[A-Za-z0-9_]/.test(src[cursor - 1] ?? "")) {
+    if (masked[cursor - 1] !== ")" && !/[A-Za-z0-9_]/.test(masked[cursor - 1] ?? "")) {
       break;
     }
 
-    // We're at the end of either "@Name(...)" or "@Name". Walk back to find '@'.
     let atIndex = -1;
-    if (src[cursor - 1] === ")") {
-      // find the matching '(' by scanning backwards with a depth counter
+    if (masked[cursor - 1] === ")") {
       let depth = 0;
       let j = cursor - 1;
       for (; j >= 0; j--) {
-        if (src[j] === ")") depth++;
-        else if (src[j] === "(") {
+        if (masked[j] === ")") depth++;
+        else if (masked[j] === "(") {
           depth--;
           if (depth === 0) break;
         }
       }
       const openParen = j;
-      // now walk back further over the identifier before '('
       let k = openParen - 1;
-      while (k >= 0 && /[A-Za-z0-9_.]/.test(src[k])) k--;
-      if (src[k] === "@") atIndex = k;
+      while (k >= 0 && /[A-Za-z0-9_.]/.test(masked[k])) k--;
+      if (masked[k] === "@") atIndex = k;
       if (atIndex >= 0) {
-        const name = src.slice(atIndex + 1, openParen).trim();
-        const args = src.slice(openParen + 1, cursor - 1).trim();
+        const name = masked.slice(atIndex + 1, openParen).trim();
+        const args = orig.slice(openParen + 1, cursor - 1).trim();
         annotations.unshift({ name, args, start: atIndex, end: cursor });
         cursor = atIndex;
         continue;
@@ -262,10 +365,10 @@ function collectAnnotationsBefore(src: string, beforeIndex: number): RawAnnotati
       break;
     } else {
       let k = cursor - 1;
-      while (k >= 0 && /[A-Za-z0-9_.]/.test(src[k])) k--;
-      if (src[k] === "@") atIndex = k;
+      while (k >= 0 && /[A-Za-z0-9_.]/.test(masked[k])) k--;
+      if (masked[k] === "@") atIndex = k;
       if (atIndex >= 0) {
-        const name = src.slice(atIndex + 1, cursor).trim();
+        const name = masked.slice(atIndex + 1, cursor).trim();
         annotations.unshift({ name, args: "", start: atIndex, end: cursor });
         cursor = atIndex;
         continue;
@@ -277,77 +380,280 @@ function collectAnnotationsBefore(src: string, beforeIndex: number): RawAnnotati
   return annotations;
 }
 
+function shortName(name: string): string {
+  return name.split(".").pop() ?? name;
+}
+
 function classifyKind(annotations: RawAnnotation[]): ClassKind {
   for (const a of annotations) {
-    const short = a.name.split(".").pop() ?? a.name;
+    const short = shortName(a.name);
     if (short in KIND_BY_ANNOTATION) return KIND_BY_ANNOTATION[short];
   }
   return "other";
 }
 
-/** Pulls a "value" or bare string argument out of a mapping annotation's raw args, e.g. `("/users")` or `(value = "/users", method = ...)`. */
-function extractPathFromArgs(args: string): string {
-  const valueMatch = args.match(/value\s*=\s*"([^"]*)"/);
-  if (valueMatch) return valueMatch[1];
-  const bareMatch = args.match(/"([^"]*)"/);
-  if (bareMatch) return bareMatch[1];
-  return "";
+/** A Spring Data repository is an interface extending one of the well-known repository types, with or without @Repository. */
+function classifySpringDataInterface(header: string): ClassKind {
+  const extendsMatch = header.match(/\bextends\b([\s\S]*)$/);
+  if (!extendsMatch) return "other";
+  const names = extendsMatch[1].match(/[A-Za-z_$][\w$]*/g) ?? [];
+  return names.some((n) => SPRING_DATA_REPOSITORY_TYPES.has(n)) ? "repository" : "other";
 }
 
-function extractEndpoints(classBody: string): Endpoint[] {
+interface MappingArgs {
+  paths: string[];
+  methods: string[];
+  /** true when a path argument is present but is not a string literal (e.g. a constant) */
+  unresolved: boolean;
+}
+
+/** Reads paths and HTTP methods from a mapping annotation's raw args, e.g. `("/users")`, `(value = {"/a","/b"}, method = RequestMethod.POST)`. */
+function parseMappingArgs(args: string): MappingArgs {
+  const paths: string[] = [];
+  let target: string | null = null;
+
+  const attr = args.match(/\b(?:value|path)\s*=\s*(\{[^}]*\}|"(?:[^"\\]|\\.)*")/);
+  if (attr) {
+    target = attr[1];
+  } else {
+    const trimmed = args.trim();
+    if (trimmed.startsWith("{")) {
+      target = trimmed.slice(0, trimmed.indexOf("}") + 1);
+    } else if (trimmed.startsWith('"')) {
+      const lit = trimmed.match(/^"(?:[^"\\]|\\.)*"/);
+      target = lit ? lit[0] : null;
+    }
+  }
+
+  if (target) {
+    for (const s of target.matchAll(/"((?:[^"\\]|\\.)*)"/g)) paths.push(s[1]);
+  }
+
+  const methods = [...args.matchAll(/RequestMethod\.(\w+)/g)].map((m) => m[1]);
+
+  const hasPathAttr = /\b(?:value|path)\s*=/.test(args);
+  const bareFirstArg = args.trim() !== "" && !/^\s*\w+\s*=/.test(args);
+  const unresolved = paths.length === 0 && (hasPathAttr || bareFirstArg);
+
+  return { paths, methods, unresolved };
+}
+
+function trimSlashes(s: string): string {
+  return s.replace(/^\/+|\/+$/g, "");
+}
+
+/** Joins a class-level prefix and a method path into one normalised path ("/" minimum). */
+function joinPath(prefix: string, path: string): string {
+  const parts = [prefix, path].map(trimSlashes).filter(Boolean);
+  return "/" + parts.join("/");
+}
+
+/** Finds the name of the method declared right after a mapping annotation, skipping any further annotations. */
+function findMethodName(masked: string, from: number): string {
+  let i = from;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    while (i < masked.length && /\s/.test(masked[i])) i++;
+    if (masked[i] === "@" && !masked.startsWith("@interface", i)) {
+      i++;
+      while (i < masked.length && /[\w.]/.test(masked[i])) i++;
+      while (i < masked.length && /\s/.test(masked[i])) i++;
+      if (masked[i] === "(") i = findMatchingParen(masked, i);
+      continue;
+    }
+    break;
+  }
+
+  const stop = /[({};]/g;
+  stop.lastIndex = i;
+  const m = stop.exec(masked);
+  if (!m || m[0] !== "(") return "(unknown)";
+  const header = masked.slice(i, m.index);
+  const nameMatch = header.match(/([A-Za-z_$][\w$]*)\s*$/);
+  return nameMatch ? nameMatch[1] : "(unknown)";
+}
+
+function extractEndpoints(
+  masked: string,
+  orig: string,
+  classPrefix: { prefix: string; unresolved: boolean }
+): Endpoint[] {
   const endpoints: Endpoint[] = [];
-  const annotationCallRegex = /@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\b/g;
+  const re = /@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\b/g;
 
   let match: RegExpExecArray | null;
-  while ((match = annotationCallRegex.exec(classBody)) !== null) {
+  while ((match = re.exec(masked)) !== null) {
     const name = match[1];
     let args = "";
-    let afterAnnotation = match.index + match[0].length;
+    let end = match.index + match[0].length;
 
-    if (classBody[afterAnnotation] === "(") {
-      const closeIdx = findMatchingParen(classBody, afterAnnotation);
-      args = classBody.slice(afterAnnotation + 1, closeIdx - 1);
-      afterAnnotation = closeIdx;
+    let p = end;
+    while (p < masked.length && /\s/.test(masked[p])) p++;
+    if (masked[p] === "(") {
+      const close = findMatchingParen(masked, p);
+      args = orig.slice(p + 1, close - 1);
+      end = close;
     }
+    re.lastIndex = end;
 
-    // Find the next method declaration after this annotation: skip any other
-    // annotations/whitespace, then look for `... name(` before the next `{`.
-    const rest = classBody.slice(afterAnnotation);
-    const methodMatch = rest.match(/^[\s\S]*?(\w+)\s*\([^)]*\)\s*\{/);
-    const methodName = methodMatch ? methodMatch[1] : "(unknown)";
+    const parsed = parseMappingArgs(args);
+    const methodName = findMethodName(masked, end);
 
-    endpoints.push({
-      httpMethod: MAPPING_ANNOTATIONS[name] ?? "MAPPING",
-      path: extractPathFromArgs(args),
-      methodName,
-    });
+    const httpMethods =
+      name === "RequestMapping" && parsed.methods.length > 0
+        ? parsed.methods
+        : [MAPPING_ANNOTATIONS[name] ?? "ANY"];
+    const methodPaths = parsed.paths.length > 0 ? parsed.paths : [""];
+
+    for (const httpMethod of httpMethods) {
+      for (const mp of methodPaths) {
+        const unresolved = classPrefix.unresolved || parsed.unresolved;
+        endpoints.push({
+          httpMethod,
+          path: unresolved ? "" : joinPath(classPrefix.prefix, mp),
+          methodName,
+        });
+      }
+    }
   }
 
   return endpoints;
 }
 
-function extractDependencies(classBody: string, className: string): string[] {
-  const deps = new Set<string>();
+/** Splits a parameter list at top-level commas (ignoring commas inside <> and ()). */
+function splitTopLevel(text: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of text) {
+    if (ch === "<" || ch === "(") depth++;
+    else if (ch === ">" || ch === ")") depth = Math.max(0, depth - 1);
+    if (ch === "," && depth === 0) {
+      parts.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim()) parts.push(current);
+  return parts;
+}
 
-  // @Autowired field injection: @Autowired ... Type name;
-  const autowiredFieldRegex =
-    /@Autowired\s*(?:\([^)]*\))?\s*(?:private|protected|public)?\s*(?:final\s+)?(\w+)\s*(?:<[^>]*>)?\s+\w+\s*;/g;
+/** Every simple type name mentioned in a type expression, e.g. `Map<String, List<Foo>>` → Map, String, List, Foo. */
+function typeNames(typeText: string): string[] {
+  const names = typeText.match(/[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*/g) ?? [];
+  return names.map((n) => n.split(".").pop() as string);
+}
+
+/** Strips leading annotations (with balanced parens) and `final` from a parameter, then returns its type names. */
+function paramTypeNames(param: string): string[] {
+  let p = param.trim();
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    if (p.startsWith("@")) {
+      let i = 1;
+      while (i < p.length && /[\w.]/.test(p[i])) i++;
+      while (i < p.length && /\s/.test(p[i])) i++;
+      if (p[i] === "(") i = findMatchingParen(p, i);
+      p = p.slice(i).trim();
+      continue;
+    }
+    if (p.startsWith("final ")) {
+      p = p.slice(6).trim();
+      continue;
+    }
+    break;
+  }
+  const typeText = p.replace(/\s*[\w$]+\s*$/, "");
+  return typeNames(typeText);
+}
+
+function paramListTypeNames(paramList: string): string[] {
+  return splitTopLevel(paramList).flatMap(paramTypeNames);
+}
+
+/** Skips whitespace, annotations and modifiers starting at `i`, returning the index of the first real token. */
+function skipAnnotationsAndModifiers(masked: string, from: number): number {
+  let i = from;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    while (i < masked.length && /\s/.test(masked[i])) i++;
+    if (masked[i] === "@") {
+      i++;
+      while (i < masked.length && /[\w.]/.test(masked[i])) i++;
+      while (i < masked.length && /\s/.test(masked[i])) i++;
+      if (masked[i] === "(") i = findMatchingParen(masked, i);
+      continue;
+    }
+    const m = /^[A-Za-z]+/.exec(masked.slice(i, i + 12));
+    if (m && MODIFIER_KEYWORDS.has(m[0]) && !/[\w$]/.test(masked[i + m[0].length] ?? "")) {
+      i += m[0].length;
+      continue;
+    }
+    break;
+  }
+  return i;
+}
+
+function extractDependencies(
+  masked: string,
+  className: string,
+  classAnnotations: RawAnnotation[]
+): string[] {
+  const deps = new Set<string>();
+  const add = (names: string[]) => names.forEach((n) => deps.add(n));
+
+  // Explicit injection points: @Autowired / @Inject / @Resource on a field,
+  // a setter, or a constructor — possibly stacked with other annotations
+  // such as @Qualifier("x").
+  const injectionRegex = /@(?:Autowired|Inject|Resource)\b/g;
   let m: RegExpExecArray | null;
-  while ((m = autowiredFieldRegex.exec(classBody)) !== null) {
-    deps.add(m[1]);
+  while ((m = injectionRegex.exec(masked)) !== null) {
+    let pos = m.index + m[0].length;
+    while (pos < masked.length && /\s/.test(masked[pos])) pos++;
+    if (masked[pos] === "(") pos = findMatchingParen(masked, pos);
+
+    const start = skipAnnotationsAndModifiers(masked, pos);
+    const term = /[;=({]/g;
+    term.lastIndex = start;
+    const t = term.exec(masked);
+    if (!t) continue;
+    const header = masked.slice(start, t.index);
+    // annotation sat inside a parameter list rather than on a member
+    if (header.includes(")") || splitTopLevel(header).length > 1) continue;
+
+    if (t[0] === ";" || t[0] === "=") {
+      add(typeNames(header.replace(/\s*[\w$]+\s*$/, "")));
+    } else if (t[0] === "(") {
+      const close = findMatchingParen(masked, t.index);
+      add(paramListTypeNames(masked.slice(t.index + 1, close - 1)));
+    }
   }
 
-  // Constructor injection: public ClassName(Type1 a, Type2 b) — Spring 4.3+
-  // implicit autowiring on a class's sole constructor. We match any
-  // constructor whose name equals the class name, since a false match on an
-  // unrelated method sharing that name isn't possible in valid Java.
-  const ctorRegex = new RegExp(`\\b${className}\\s*\\(([^)]*)\\)\\s*\\{`, "g");
-  while ((m = ctorRegex.exec(classBody)) !== null) {
-    const params = m[1];
-    const paramTypeRegex = /(?:^|,)\s*(?:final\s+)?(\w+)\s*(?:<[^>]*>)?\s+\w+/g;
-    let pm: RegExpExecArray | null;
-    while ((pm = paramTypeRegex.exec(params)) !== null) {
-      deps.add(pm[1]);
+  // Implicit constructor injection (Spring 4.3+): a constructor named after
+  // the class. Skips `new ClassName(...)` calls and `.ClassName(...)` calls.
+  const ctorRegex = new RegExp(`\\b${className}\\s*\\(`, "g");
+  while ((m = ctorRegex.exec(masked)) !== null) {
+    let k = m.index;
+    while (k > 0 && /\s/.test(masked[k - 1])) k--;
+    if (masked[k - 1] === "." || wordEndingAt(masked, k).word === "new") continue;
+
+    const open = masked.indexOf("(", m.index);
+    const close = findMatchingParen(masked, open);
+    const tail = /\s*(?:throws\s+[\w.$,\s]+?)?\s*\{/y;
+    tail.lastIndex = close;
+    if (!tail.test(masked)) continue;
+    add(paramListTypeNames(masked.slice(open + 1, close - 1)));
+  }
+
+  // Lombok: @RequiredArgsConstructor generates a constructor taking every
+  // non-static final field that has no initialiser.
+  if (classAnnotations.some((a) => shortName(a.name) === "RequiredArgsConstructor")) {
+    const fieldRegex =
+      /\b((?:(?:private|protected|public|static|final|transient|volatile)\s+)+)([\w.$]+(?:\s*<[^;=(){}]*>)?)\s+[\w$]+\s*;/g;
+    while ((m = fieldRegex.exec(masked)) !== null) {
+      const modifiers = m[1];
+      if (/\bfinal\b/.test(modifiers) && !/\bstatic\b/.test(modifiers)) add(typeNames(m[2]));
     }
   }
 
@@ -358,43 +664,56 @@ function extractDependencies(classBody: string, className: string): string[] {
 }
 
 /**
- * Parses a single .java file's (already comment/string-stripped) source and
- * returns every top-level class/interface/enum declaration found, with its
- * annotations, Spring "kind" classification, endpoints, and raw dependency
- * type names (not yet filtered against the whole-repo class set — the
- * caller does that once all files are parsed).
+ * Parses a single .java file's source and returns every class/interface/enum
+ * declaration carrying a recognised Spring role (or extending a Spring Data
+ * repository type), with its annotations, kind, endpoints, and raw dependency
+ * type names (not yet filtered against the whole-repo class set — the caller
+ * does that once all files are parsed).
  */
 export function parseJavaFile(source: string, filePath: string): ClassInfo[] {
   const stripped = stripComments(source);
+  const masked = maskStrings(stripped);
   const results: ClassInfo[] = [];
 
   const declRegex = /\b(class|interface|enum)\s+(\w+)/g;
   let match: RegExpExecArray | null;
 
-  while ((match = declRegex.exec(stripped)) !== null) {
+  while ((match = declRegex.exec(masked)) !== null) {
+    const keyword = match[1];
     const className = match[2];
     const declKeywordIndex = match.index;
 
-    const braceIndex = stripped.indexOf("{", declKeywordIndex);
+    const braceIndex = masked.indexOf("{", declKeywordIndex);
     if (braceIndex === -1) continue;
-    const bodyEnd = findMatchingBrace(stripped, braceIndex);
-    const classBody = stripped.slice(braceIndex + 1, bodyEnd - 1);
+    const bodyEnd = findMatchingBrace(masked, braceIndex);
+    const bodyMasked = masked.slice(braceIndex + 1, bodyEnd - 1);
+    const bodyOrig = stripped.slice(braceIndex + 1, bodyEnd - 1);
 
-    const annotations = collectAnnotationsBefore(stripped, declKeywordIndex);
-    const kind = classifyKind(annotations);
+    const annotations = collectAnnotationsBefore(masked, stripped, declKeywordIndex);
+    let kind = classifyKind(annotations);
+    if (kind === "other" && keyword === "interface") {
+      kind = classifySpringDataInterface(masked.slice(declKeywordIndex, braceIndex));
+    }
 
-    // Only classes carrying a recognized Spring annotation are reported —
-    // plain POJOs/utility classes are noise for an architecture-map report.
+    // Only classes with a recognised Spring role are reported — plain
+    // POJOs/utility classes are noise for an architecture-map report.
     if (kind === "other") continue;
+
+    const classMapping = annotations.find((a) => shortName(a.name) === "RequestMapping");
+    let classPrefix = { prefix: "", unresolved: false };
+    if (classMapping) {
+      const parsed = parseMappingArgs(classMapping.args);
+      classPrefix = { prefix: parsed.paths[0] ?? "", unresolved: parsed.unresolved };
+    }
 
     results.push({
       name: className,
       kind,
       file: filePath,
       annotations: annotations.map((a) => a.name),
-      endpoints: kind === "controller" ? extractEndpoints(classBody) : [],
-      dependsOn: extractDependencies(classBody, className),
-      rawBody: classBody.trim(),
+      endpoints: kind === "controller" ? extractEndpoints(bodyMasked, bodyOrig, classPrefix) : [],
+      dependsOn: extractDependencies(bodyMasked, className, annotations),
+      rawBody: bodyOrig.trim(),
     });
   }
 

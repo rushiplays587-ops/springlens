@@ -53,10 +53,16 @@ test("extracts controller endpoints with HTTP method, path, and method name", ()
   assert.ok(controller);
 
   const getEndpoint = controller!.endpoints.find((e) => e.methodName === "getUser");
-  assert.deepEqual(getEndpoint, { httpMethod: "GET", path: "/{id}", methodName: "getUser" });
+  // The class-level @RequestMapping("/api/users") prefix must be joined in.
+  assert.deepEqual(getEndpoint, {
+    httpMethod: "GET",
+    path: "/api/users/{id}",
+    methodName: "getUser",
+  });
 
   const postEndpoint = controller!.endpoints.find((e) => e.methodName === "createUser");
   assert.equal(postEndpoint?.httpMethod, "POST");
+  assert.equal(postEndpoint?.path, "/api/users");
 });
 
 test("scans the fixture's pom.xml and flags its planted risky dependencies", () => {

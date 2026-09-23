@@ -1,5 +1,6 @@
 export type ClassKind =
   | "controller"
+  | "advice"
   | "service"
   | "repository"
   | "entity"
@@ -8,7 +9,7 @@ export type ClassKind =
   | "other";
 
 export interface Endpoint {
-  httpMethod: string; // GET, POST, PUT, DELETE, PATCH, or "MAPPING" if unspecified
+  httpMethod: string; // GET, POST, PUT, DELETE, PATCH, or "ANY" for a @RequestMapping without a method
   path: string;
   methodName: string;
 }

@@ -2,6 +2,7 @@ import { ClassInfo, ClassKind, RepoModel } from "./model.js";
 
 const KIND_LABELS: Record<ClassKind, string> = {
   controller: "Controllers",
+  advice: "Controller advice",
   service: "Services",
   repository: "Repositories",
   entity: "Entities",
@@ -12,6 +13,7 @@ const KIND_LABELS: Record<ClassKind, string> = {
 
 const KIND_ORDER: ClassKind[] = [
   "controller",
+  "advice",
   "service",
   "repository",
   "entity",
@@ -23,7 +25,11 @@ const KIND_ORDER: ClassKind[] = [
 function renderClass(cls: ClassInfo): string {
   const lines: string[] = [];
   lines.push(`### ${cls.name}`);
-  lines.push(`*${cls.file}* — \`${cls.annotations.map((a) => "@" + a).join(" ")}\``);
+  const annotationText =
+    cls.annotations.length > 0
+      ? ` — \`${cls.annotations.map((a) => "@" + a).join(" ")}\``
+      : " — Spring Data interface";
+  lines.push(`*${cls.file}*${annotationText}`);
 
   if (cls.narrative) {
     lines.push("");
