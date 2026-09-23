@@ -28,8 +28,10 @@ be added to the `test` script in `package.json` or they will not run.
 - `report.ts` — Markdown rendering
 - `cli.ts` — argument handling and the run flow
 - `model.ts` — shared types
-- `test-fixture/` — a small realistic Spring app with deliberate traps (decoy
-  comment, `dependencyManagement`-pinned old log4j)
+
+At the repo root (not in `src/`): `test-fixture/` is a small realistic Spring
+app with deliberate traps (decoy comment, `dependencyManagement`-pinned old
+log4j) that the tests scan.
 
 ## How the parser works (read before touching it)
 No AST: v1 is heuristic text scanning, by design. Each file is handled as two
