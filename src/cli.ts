@@ -1,34 +1,49 @@
 #!/usr/bin/env node
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { buildRepoModel } from "./build.js";
 import { renderMarkdownReport } from "./report.js";
-import { narrateAll } from "./narrate.js";
+import { MAX_BODY_CHARS, NARRATION_MODEL, narrateAll } from "./narrate.js";
 
 const VERSION = "0.1.0";
+const KNOWN_FLAGS = new Set(["--ai", "--no-ai", "--help", "-h"]);
 
 function printUsage(): void {
   console.log(`SpringLens v${VERSION}
-AI-powered onboarding and dependency-risk analysis for Java/Spring Boot codebases.
+Onboarding and dependency-risk analysis for Java/Spring Boot codebases.
 
 Usage:
-  springlens <path-to-repo> [--no-ai]
+  springlens <path-to-repo> [--ai]
 
 Example:
   springlens ./my-legacy-service
 
-AI narrative (plain-English explanations per class) requires an
-ANTHROPIC_API_KEY environment variable. Without one, or with --no-ai,
-SpringLens still produces the full structural report — just without the
-narrative text.
+By default SpringLens runs entirely locally and writes a structural report
+(springlens-report.md inside the repo). Nothing leaves your machine.
+
+--ai   also generate a plain-English explanation per class using the Anthropic
+       API. This SENDS class source code (up to ${MAX_BODY_CHARS} characters per class,
+       including string literals such as URLs and config values) to Anthropic.
+       Requires the ANTHROPIC_API_KEY environment variable.
 `);
 }
 
 async function main(argv: string[]): Promise<void> {
-  const noAi = argv.includes("--no-ai");
-  const target = argv.find((a) => !a.startsWith("--"));
+  const flags = argv.filter((a) => a.startsWith("-"));
+  const unknown = flags.filter((f) => !KNOWN_FLAGS.has(f));
+  if (unknown.length > 0) {
+    console.error(`SpringLens: unknown option ${unknown.join(", ")}. Run with --help for usage.`);
+    process.exitCode = 2;
+    return;
+  }
+  if (flags.includes("--ai") && flags.includes("--no-ai")) {
+    console.error("SpringLens: --ai and --no-ai contradict each other; pass only one.");
+    process.exitCode = 2;
+    return;
+  }
 
-  if (!target || target === "--help" || target === "-h") {
+  const target = argv.find((a) => !a.startsWith("-"));
+  if (!target || flags.includes("--help") || flags.includes("-h")) {
     printUsage();
     return;
   }
@@ -37,6 +52,20 @@ async function main(argv: string[]): Promise<void> {
 
   if (!existsSync(repoPath)) {
     console.error(`SpringLens: path not found — ${repoPath}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (!statSync(repoPath).isDirectory()) {
+    console.error(`SpringLens: ${repoPath} is a file — point SpringLens at the repo's directory.`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const outputPath = resolve(repoPath, "springlens-report.md");
+  if (existsSync(outputPath) && lstatSync(outputPath).isSymbolicLink()) {
+    console.error(
+      `SpringLens: refusing to write ${outputPath} because it is a symbolic link. Remove it and re-run.`
+    );
     process.exitCode = 1;
     return;
   }
@@ -61,22 +90,26 @@ async function main(argv: string[]): Promise<void> {
     `Scanned ${model.dependencies.length} dependencies — ${model.riskFindings.length} flagged.`
   );
 
+  const wantsAi = flags.includes("--ai");
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (noAi) {
-    console.log("AI narrative skipped (--no-ai). Structural report only.");
+  if (!wantsAi) {
+    console.log(
+      "Local structural report only. Pass --ai (needs ANTHROPIC_API_KEY) for plain-English " +
+        "explanations — note that sends class source to the Anthropic API."
+    );
   } else if (!apiKey) {
     console.log(
-      "AI narrative skipped: no ANTHROPIC_API_KEY set. Structural report only " +
-        "— set that env var (or drop --no-ai if you'd passed it) to get plain-English " +
-        "explanations per class."
+      "--ai given but ANTHROPIC_API_KEY is not set — writing the structural report only."
     );
   } else if (model.classes.length > 0) {
-    console.log(`Generating AI narrative for ${model.classes.length} classes...`);
+    console.log(
+      `--ai: sending the source of ${model.classes.length} classes (up to ${MAX_BODY_CHARS} characters each, ` +
+        `string literals included) to the Anthropic API using model ${NARRATION_MODEL}.`
+    );
     await narrateAll(apiKey, model.classes);
   }
 
   const report = renderMarkdownReport(model);
-  const outputPath = resolve(repoPath, "springlens-report.md");
   writeFileSync(outputPath, report, "utf-8");
 
   console.log(`Report written to: ${outputPath}`);
