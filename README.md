@@ -117,15 +117,23 @@ annotation values are then read from the original text.
 
 Known limitations (documented, not oversights):
 
-- Records and Kotlin/Groovy sources are not parsed.
+- Records and Kotlin/Groovy sources are not parsed. Record DTOs are not Spring
+  beans, so this rarely matters, but a record annotated as a bean (for example
+  `@ConfigurationProperties`) is missed.
+- Test sources (`src/test`) are skipped, so test-only configuration classes do
+  not appear in the map.
 - Classes with the same simple name in different packages are merged by name.
 - Annotation arguments that are constants (e.g. `@GetMapping(Paths.USERS)`)
   are shown as "path not statically resolvable" rather than guessed.
 - `@Bean`-method parameter injection is not followed.
 - Gradle: string notation and the Spring Boot plugin version only — no map
-  notation, no multi-project builds. Maven `${property}` versions resolve only
-  from the same pom's `<properties>`; otherwise they are reported as
-  "check by hand".
+  notation, no multi-project builds. Maven `${property}` versions resolve from
+  the pom's own `<properties>` and those of its parent poms inside the repo;
+  otherwise they are reported as "check by hand". A module also inherits
+  `<dependencyManagement>` versions from those in-repo parents; a parent outside the repo (including `spring-boot-starter-parent`'s
+  own managed versions) is not read, so a dependency whose version comes only from
+  there has no version to check. Maven `<profiles>` and `<build>` (plugin
+  dependencies) are ignored.
 
 If accuracy stops being enough in practice, a real AST parser (e.g.
 `java-parser`) is the planned upgrade — see the doc comment at the top of

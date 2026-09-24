@@ -1,5 +1,5 @@
 import { lstatSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 // Never source, anywhere in the tree.
 const ALWAYS_EXCLUDED_DIRS = new Set(["target", "node_modules", ".git"]);
@@ -10,7 +10,7 @@ const BUILD_OUTPUT_DIRS = new Set(["build", "out", "bin"]);
 
 /**
  * Recursively finds all .java files under rootPath, skipping build output
- * and VCS directories so we only scan actual source. Symbolic links are not
+ * and VCS directories and src/test so we only scan production source. Symbolic links are not
  * followed (avoids loops and escaping the scanned tree).
  */
 export function findJavaFiles(rootPath: string): string[] {
@@ -37,6 +37,10 @@ export function findJavaFiles(rootPath: string): string[] {
       if (stat.isSymbolicLink()) continue;
 
       if (stat.isDirectory()) {
+        // Maven/Gradle test sources (src/test): test-only @Configuration/@Component classes
+        // are not part of the application's architecture. A package named "test" deeper in
+        // src/main is still scanned.
+        if (entry === "test" && dir !== rootPath && basename(dir) === "src") continue;
         if (!insideSrc && BUILD_OUTPUT_DIRS.has(entry)) continue;
         walk(fullPath, insideSrc || entry === "src");
       } else if (stat.isFile() && entry.endsWith(".java")) {

@@ -14,7 +14,7 @@ export const DEFAULT_RESULT_COUNT = 5;
 // it is for than the same word somewhere in its body.
 const FIELD_WEIGHTS = {
   name: 6,
-  kind: 4,
+  kind: 6,
   endpoint: 4,
   annotation: 2,
   dependsOn: 1.5,
@@ -27,6 +27,11 @@ const B = 0.75;
 const SYNONYM_WEIGHT = 0.4;
 const WEAK_SYNONYM_WEIGHT = 0.15;
 const JOINED_WEIGHT = 0.6;
+// A word repeated in a class body counts at most this many times, so a class that merely
+// mentions "ownerRepository" ten times cannot outrank the repository itself.
+const BODY_TF_CAP = 3;
+// Second words that form phrasal verbs ("log in", "sign up") and so are joined to the first.
+const JOIN_PARTICLES = new Set(["in", "up", "out", "on", "off"]);
 
 // Words that carry no signal: English question words plus Java/Spring syntax
 // that appears in nearly every class body.
@@ -74,7 +79,18 @@ const SYNONYMS: Record<string, string[]> = {
   authentication: ["auth", "security", "login", "token"],
   security: ["auth", "authenticate", "token"],
   password: ["auth", "login", "security"],
+  store: ["repository", "entity~"],
+  save: ["repository", "entity~"],
+  saved: ["repository", "entity~"],
+  fetch: ["repository~", "client"],
+  load: ["repository~"],
+  create: ["controller~", "post"],
+  delete: ["controller~"],
+  update: ["controller~", "put"],
 };
+
+// Looked up by stem so "stored"/"stores"/"store" all find the same entry.
+const SYNONYMS_BY_STEM = new Map(Object.entries(SYNONYMS).map(([word, related]) => [stem(word), related]));
 
 /** Reduces a lower-case word to a rough stem so "users"/"user" and "handled"/"handle" meet. */
 export function stem(word: string): string {
@@ -128,11 +144,12 @@ export function queryTerms(question: string): QueryTerm[] {
   // "log in" should also find "login": try each adjacent pair joined into one word.
   for (let i = 0; i + 1 < allWords.length; i++) {
     const joined = allWords[i] + allWords[i + 1];
-    const bothNoise = NOISE.has(allWords[i]) && NOISE.has(allWords[i + 1]);
-    if (!bothNoise && !NOISE.has(joined)) add(joined, JOINED_WEIGHT, `${allWords[i]} ${allWords[i + 1]}`);
+    const joinable =
+      !NOISE.has(allWords[i]) && (!NOISE.has(allWords[i + 1]) || JOIN_PARTICLES.has(allWords[i + 1]));
+    if (joinable && !NOISE.has(joined)) add(joined, JOINED_WEIGHT, `${allWords[i]} ${allWords[i + 1]}`);
   }
   for (const word of typed) {
-    for (const entry of Object.hasOwn(SYNONYMS, word) ? SYNONYMS[word] : []) {
+    for (const entry of SYNONYMS_BY_STEM.get(stem(word)) ?? []) {
       const weak = entry.endsWith("~");
       add(weak ? entry.slice(0, -1) : entry, weak ? WEAK_SYNONYM_WEIGHT : SYNONYM_WEIGHT, word);
     }
@@ -152,8 +169,10 @@ export interface SearchIndex {
   avgLength: number;
 }
 
-function addField(tf: Map<string, number>, text: string, weight: number): void {
-  for (const token of tokenize(text)) tf.set(token, (tf.get(token) ?? 0) + weight);
+function addField(tf: Map<string, number>, text: string, weight: number, cap = Infinity): void {
+  const counts = new Map<string, number>();
+  for (const token of tokenize(text)) counts.set(token, (counts.get(token) ?? 0) + 1);
+  for (const [token, count] of counts) tf.set(token, (tf.get(token) ?? 0) + weight * Math.min(count, cap));
 }
 
 export function buildIndex(classes: ClassInfo[]): SearchIndex {
@@ -167,7 +186,8 @@ export function buildIndex(classes: ClassInfo[]): SearchIndex {
     }
     for (const d of cls.dependsOn) addField(tf, d, FIELD_WEIGHTS.dependsOn);
     addField(tf, cls.file, FIELD_WEIGHTS.file);
-    addField(tf, cls.rawBody, FIELD_WEIGHTS.body);
+    addField(tf, cls.rawBody, FIELD_WEIGHTS.body, BODY_TF_CAP);
+    if (cls.endpoints.length > 0) addField(tf, "endpoint", FIELD_WEIGHTS.endpoint);
     let length = 0;
     for (const v of tf.values()) length += v;
     return { cls, tf, length };

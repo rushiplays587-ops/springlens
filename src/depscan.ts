@@ -139,22 +139,17 @@ export function parsePomModules(xml: string): string[] {
  * Extracts <dependency> entries from a Maven pom.xml, deliberately excluding
  * anything inside <dependencyManagement> — those are version-pinning
  * declarations, not dependencies actually used by this module, and
- * reporting them as risks would be misleading. XML comments are ignored, and
+ * reporting them as risks would be misleading. Profiles and <build> (plugin
+ * dependencies) are ignored for the same reason. XML comments are ignored, and
  * simple ${property} versions are resolved from the pom's own <properties>
- * block. The project's parent (<parent>...</parent>, most commonly
+ * block (and its parent's, if `inherited` is given), and a dependency with no
+ * <version> takes the one pinned in <dependencyManagement> when there is one. The project's parent (<parent>...</parent>, most commonly
  * spring-boot-starter-parent) is included too since that's where a Spring
  * Boot project's own version usually lives.
  */
-export function parsePomDependencies(rawXml: string): Dependency[] {
-  const xml = rawXml.replace(/<!--[\s\S]*?-->/g, "");
-
-  const properties = new Map<string, string>();
-  const propsBlock = xml.match(/<properties>([\s\S]*?)<\/properties>/)?.[1] ?? "";
-  for (const p of propsBlock.matchAll(/<([\w.\-]+)>([^<]*)<\/\1>/g)) {
-    properties.set(p[1], p[2].trim());
-  }
-  const resolve = (v: string | undefined): string | undefined =>
-    v?.replace(/\$\{([^}]+)\}/g, (whole, name) => properties.get(name) ?? whole);
+export function parsePomDependencies(rawXml: string, inherited?: PomContext): Dependency[] {
+  const xml = projectXml(rawXml);
+  const { resolve, managed } = pomContext(xml, inherited);
 
   const withoutDependencyManagement = xml.replace(
     /<dependencyManagement>[\s\S]*?<\/dependencyManagement>/g,
@@ -162,17 +157,9 @@ export function parsePomDependencies(rawXml: string): Dependency[] {
   );
 
   const deps: Dependency[] = [];
-  const depBlockRegex = /<dependency>([\s\S]*?)<\/dependency>/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = depBlockRegex.exec(withoutDependencyManagement)) !== null) {
-    const block = match[1];
-    const groupId = block.match(/<groupId>([^<]+)<\/groupId>/)?.[1]?.trim();
-    const artifactId = block.match(/<artifactId>([^<]+)<\/artifactId>/)?.[1]?.trim();
-    const version = resolve(block.match(/<version>([^<]+)<\/version>/)?.[1]?.trim());
-    if (groupId && artifactId) {
-      deps.push({ groupId, artifactId, version: version ?? null });
-    }
+  for (const block of dependencyBlocks(withoutDependencyManagement)) {
+    const version = resolve(block.version) ?? resolve(managed.get(managedKey(block)));
+    deps.push({ groupId: block.groupId, artifactId: block.artifactId, version: version ?? null });
   }
 
   const parentBlock = xml.match(/<parent>([\s\S]*?)<\/parent>/)?.[1];
@@ -186,6 +173,113 @@ export function parsePomDependencies(rawXml: string): Dependency[] {
   }
 
   return deps;
+}
+
+/**
+ * What a pom passes down to the modules that declare it as their parent:
+ * its <properties> and the versions pinned in its <dependencyManagement>.
+ * Only what is visible in the scanned repo — a parent outside it (such as
+ * spring-boot-starter-parent) is not read. Pinned versions are kept raw
+ * (possibly still containing ${...}) because Maven resolves them against the
+ * properties of the pom that finally uses them, so a child can override a
+ * parent's version property.
+ */
+export interface PomContext {
+  properties: Map<string, string>;
+  managed: Map<string, string>; // managedKey -> raw version
+}
+
+interface DependencyBlock {
+  groupId: string;
+  artifactId: string;
+  version?: string;
+  type?: string;
+  classifier?: string;
+}
+
+function stripXmlComments(xml: string): string {
+  return xml.replace(/<!--[\s\S]*?-->/g, "");
+}
+
+/**
+ * The project-level part of a pom: comments gone, and <profiles> and <build> removed. Profile
+ * properties and pins only apply when the profile is active, and dependencies under <build> belong
+ * to plugins, so neither may override or add to what the project itself declares.
+ */
+function projectXml(rawXml: string): string {
+  return stripXmlComments(rawXml)
+    .replace(/<profiles>[\s\S]*?<\/profiles>/g, "")
+    .replace(/<build>[\s\S]*?<\/build>/g, "");
+}
+
+const MAX_PROPERTY_DEPTH = 10;
+
+/** Substitutes ${name} until nothing changes (properties often refer to other properties). */
+function interpolate(value: string, properties: Map<string, string>): string {
+  let current = value;
+  for (let i = 0; i < MAX_PROPERTY_DEPTH; i++) {
+    const next = current.replace(/\$\{([^}]+)\}/g, (whole, name) => properties.get(name) ?? whole);
+    if (next === current) break;
+    current = next;
+  }
+  return current;
+}
+
+function managedKey(d: DependencyBlock): string {
+  return `${d.groupId}:${d.artifactId}:${d.type ?? "jar"}:${d.classifier ?? ""}`;
+}
+
+function dependencyBlocks(xml: string): DependencyBlock[] {
+  const blocks: DependencyBlock[] = [];
+  for (const match of xml.matchAll(/<dependency>([\s\S]*?)<\/dependency>/g)) {
+    const block = match[1];
+    const tag = (name: string) => block.match(new RegExp(`<${name}>([^<]+)</${name}>`))?.[1]?.trim();
+    const groupId = tag("groupId");
+    const artifactId = tag("artifactId");
+    if (groupId && artifactId) {
+      blocks.push({ groupId, artifactId, version: tag("version"), type: tag("type"), classifier: tag("classifier") });
+    }
+  }
+  return blocks;
+}
+
+function pomContext(xml: string, inherited?: PomContext) {
+  const properties = new Map(inherited?.properties);
+  const propsBlock = xml.match(/<properties>([\s\S]*?)<\/properties>/)?.[1] ?? "";
+  for (const p of propsBlock.matchAll(/<([\w.\-]+)>([^<]*)<\/\1>/g)) {
+    properties.set(p[1], p[2].trim());
+  }
+  const resolve = (v: string | undefined): string | undefined =>
+    v === undefined ? undefined : interpolate(v, properties);
+
+  const managed = new Map(inherited?.managed);
+  for (const mgmt of xml.matchAll(/<dependencyManagement>([\s\S]*?)<\/dependencyManagement>/g)) {
+    for (const d of dependencyBlocks(mgmt[1])) {
+      if (d.version) managed.set(managedKey(d), d.version);
+    }
+  }
+  return { properties, managed, resolve };
+}
+
+/** The context a pom hands to its modules: its own properties and pins layered over its parent's. */
+export function parsePomContext(rawXml: string, inherited?: PomContext): PomContext {
+  const { properties, managed } = pomContext(projectXml(rawXml), inherited);
+  return { properties, managed };
+}
+
+/**
+ * Where a pom's <parent> lives relative to it, following Maven: the
+ * <relativePath> if given, "../pom.xml" if the element is absent, and null when
+ * there is no <parent> or an empty <relativePath/> (parent comes from a
+ * repository, not from this checkout).
+ */
+export function parentRelativePath(rawXml: string): string | null {
+  const xml = stripXmlComments(rawXml);
+  const parentBlock = xml.match(/<parent>([\s\S]*?)<\/parent>/)?.[1];
+  if (parentBlock === undefined) return null;
+  const rel = parentBlock.match(/<relativePath>([^<]*)<\/relativePath>/);
+  if (rel) return rel[1].trim() === "" ? null : rel[1].trim();
+  return /<relativePath\s*\/>/.test(parentBlock) ? null : "../pom.xml";
 }
 
 /**

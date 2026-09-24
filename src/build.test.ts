@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildRepoModel } from "./build.js";
 
@@ -83,4 +85,112 @@ test("scans the fixture's pom.xml and flags its planted risky dependencies", () 
       ?.severity,
     "advisory"
   );
+});
+
+test("multi-module: a version pinned in the root pom's dependencyManagement applies to a module's versionless dependency", () => {
+  const root = mkdtempSync(join(tmpdir(), "springlens-mm-"));
+  try {
+    writeFileSync(
+      join(root, "pom.xml"),
+      `<project><modules><module>api</module></modules>
+       <properties><log4j.version>2.14.1</log4j.version></properties>
+       <dependencyManagement><dependencies><dependency>
+         <groupId>org.apache.logging.log4j</groupId><artifactId>log4j-core</artifactId><version>\${log4j.version}</version>
+       </dependency></dependencies></dependencyManagement></project>`
+    );
+    mkdirSync(join(root, "api"));
+    writeFileSync(
+      join(root, "api", "pom.xml"),
+      `<project><parent><groupId>x</groupId><artifactId>root</artifactId><version>1</version></parent>
+       <dependencies><dependency>
+         <groupId>org.apache.logging.log4j</groupId><artifactId>log4j-core</artifactId>
+       </dependency></dependencies></project>`
+    );
+    const model = buildRepoModel(root);
+    const finding = model.riskFindings.find((f) => f.dependency.artifactId === "log4j-core");
+    assert.equal(finding?.severity, "critical");
+    assert.equal(finding?.dependency.version, "2.14.1");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("multi-module: a module inherits from a sibling parent module named by <relativePath>, not from the aggregator", () => {
+  const root = mkdtempSync(join(tmpdir(), "springlens-mm2-"));
+  try {
+    writeFileSync(join(root, "pom.xml"), `<project><modules><module>parent</module><module>app</module></modules></project>`);
+    mkdirSync(join(root, "parent"));
+    mkdirSync(join(root, "app"));
+    writeFileSync(
+      join(root, "parent", "pom.xml"),
+      `<project><dependencyManagement><dependencies><dependency>
+         <groupId>org.apache.logging.log4j</groupId><artifactId>log4j-core</artifactId><version>2.14.1</version>
+       </dependency></dependencies></dependencyManagement></project>`
+    );
+    writeFileSync(
+      join(root, "app", "pom.xml"),
+      `<project><parent><groupId>x</groupId><artifactId>parent</artifactId><version>1</version>
+         <relativePath>../parent/pom.xml</relativePath></parent>
+       <dependencies><dependency>
+         <groupId>org.apache.logging.log4j</groupId><artifactId>log4j-core</artifactId>
+       </dependency></dependencies></project>`
+    );
+    const finding = buildRepoModel(root).riskFindings.find((f) => f.dependency.artifactId === "log4j-core");
+    assert.equal(finding?.severity, "critical");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("multi-module: a child that overrides the version property changes the inherited pin (2.17.2 is safe)", () => {
+  const root = mkdtempSync(join(tmpdir(), "springlens-mm3-"));
+  try {
+    writeFileSync(
+      join(root, "pom.xml"),
+      `<project><modules><module>app</module></modules>
+       <properties><log4j.version>2.14.1</log4j.version></properties>
+       <dependencyManagement><dependencies><dependency>
+         <groupId>org.apache.logging.log4j</groupId><artifactId>log4j-core</artifactId><version>\${log4j.version}</version>
+       </dependency></dependencies></dependencyManagement></project>`
+    );
+    mkdirSync(join(root, "app"));
+    writeFileSync(
+      join(root, "app", "pom.xml"),
+      `<project><parent><groupId>x</groupId><artifactId>root</artifactId><version>1</version></parent>
+       <properties><log4j.version>2.17.2</log4j.version></properties>
+       <dependencies><dependency>
+         <groupId>org.apache.logging.log4j</groupId><artifactId>log4j-core</artifactId>
+       </dependency></dependencies></project>`
+    );
+    const model = buildRepoModel(root);
+    assert.equal(model.dependencies.find((d) => d.artifactId === "log4j-core")?.version, "2.17.2");
+    assert.equal(model.riskFindings.length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("multi-module: a module with no <parent> inherits nothing, and a parent pointing outside the repo is ignored", () => {
+  const root = mkdtempSync(join(tmpdir(), "springlens-mm4-"));
+  try {
+    writeFileSync(
+      join(root, "pom.xml"),
+      `<project><modules><module>a</module><module>b</module></modules>
+       <dependencyManagement><dependencies><dependency>
+         <groupId>g</groupId><artifactId>lib</artifactId><version>1.0</version>
+       </dependency></dependencies></dependencyManagement></project>`
+    );
+    mkdirSync(join(root, "a"));
+    mkdirSync(join(root, "b"));
+    writeFileSync(join(root, "a", "pom.xml"), `<project><dependencies><dependency><groupId>g</groupId><artifactId>lib</artifactId></dependency></dependencies></project>`);
+    writeFileSync(
+      join(root, "b", "pom.xml"),
+      `<project><parent><relativePath>../../elsewhere/pom.xml</relativePath></parent>
+       <dependencies><dependency><groupId>g</groupId><artifactId>lib</artifactId></dependency></dependencies></project>`
+    );
+    const libs = buildRepoModel(root).dependencies.filter((d) => d.artifactId === "lib");
+    assert.deepEqual(libs.map((d) => d.version), [null]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

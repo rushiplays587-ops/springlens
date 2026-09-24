@@ -1,16 +1,19 @@
-import { existsSync, readFileSync } from "node:fs";
-import { relative, resolve, sep } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { dirname, relative, resolve, sep } from "node:path";
 import { findJavaFiles } from "./scanner.js";
 import { parseJavaFile } from "./parser.js";
 import { ClassInfo, Dependency, RepoModel } from "./model.js";
 import {
   assessDependencies,
   parseGradleDependencies,
+  parentRelativePath,
+  parsePomContext,
   parsePomDependencies,
   parsePomModules,
+  PomContext,
 } from "./depscan.js";
 
-const MAX_MODULE_DEPTH = 5;
+const MAX_MODULE_DEPTH = 10;
 
 /** Collects a pom and, recursively, the poms of the modules it declares (kept inside rootPath). */
 function collectPoms(rootPath: string, pomPath: string, seen: Set<string>, depth: number): void {
@@ -25,6 +28,22 @@ function collectPoms(rootPath: string, pomPath: string, seen: Set<string>, depth
     if (rel.startsWith("..")) continue; // never follow a <module> out of the scanned repo
     collectPoms(rootPath, modulePom, seen, depth + 1);
   }
+}
+
+/** The parent pom a pom points at via <parent>/<relativePath>, if it is a readable pom inside the repo. */
+function findParentPom(rootPath: string, pomPath: string, xml: string): string | null {
+  const rel = parentRelativePath(xml);
+  if (rel === null) return null;
+  let candidate = resolve(dirname(pomPath), rel);
+  try {
+    if (statSync(candidate).isDirectory()) candidate = resolve(candidate, "pom.xml");
+  } catch {
+    return null;
+  }
+  if (candidate === pomPath || relative(rootPath, candidate).startsWith("..") || !existsSync(candidate)) {
+    return null;
+  }
+  return candidate;
 }
 
 function loadDependencies(rootPath: string): { dependencies: Dependency[]; buildFiles: string[] } {
@@ -44,9 +63,23 @@ function loadDependencies(rootPath: string): { dependencies: Dependency[]; build
   if (existsSync(rootPom)) {
     const poms = new Set<string>();
     collectPoms(rootPath, rootPom, poms, 0);
+    // Maven inheritance follows each pom's <parent> (default ../pom.xml), not the <modules> list, so a
+    // module can inherit from a sibling "parent" module. Only parents inside the scanned repo are read.
+    const contexts = new Map<string, { own: PomContext; inherited?: PomContext }>();
+    const contextOf = (pom: string, guard: Set<string>): { own: PomContext; inherited?: PomContext } => {
+      const known = contexts.get(pom);
+      if (known) return known;
+      const xml = readFileSync(pom, "utf-8");
+      let inherited: PomContext | undefined;
+      const parentPom = guard.has(pom) ? undefined : findParentPom(rootPath, pom, xml);
+      if (parentPom) inherited = contextOf(parentPom, new Set(guard).add(pom)).own;
+      const result = { own: parsePomContext(xml, inherited), inherited };
+      contexts.set(pom, result);
+      return result;
+    };
     for (const pom of poms) {
       buildFiles.push(relative(rootPath, pom).split(sep).join("/"));
-      addAll(parsePomDependencies(readFileSync(pom, "utf-8")));
+      addAll(parsePomDependencies(readFileSync(pom, "utf-8"), contextOf(pom, new Set()).inherited));
     }
     return { dependencies, buildFiles };
   }

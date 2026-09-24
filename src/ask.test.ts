@@ -238,3 +238,41 @@ test("formatLocalAnswer: does not suggest --ai when it was already requested", (
   assert.ok(formatLocalAnswer("thing", results, [a]).includes("Pass --ai"));
   assert.ok(!formatLocalAnswer("thing", results, [a], true).includes("Pass --ai"));
 });
+
+test("rank: a class that merely mentions a repository many times does not outrank the repository", () => {
+  const index = buildIndex([
+    cls({
+      name: "InvoiceResource",
+      kind: "controller",
+      dependsOn: ["InvoiceRepository"],
+      rawBody: "invoiceRepository.save(); invoiceRepository.find(); ".repeat(20),
+    }),
+    cls({ name: "InvoiceRepository", kind: "repository", rawBody: "" }),
+  ]);
+  assert.equal(rank(index, "which class talks to the database")[0].cls.name, "InvoiceRepository");
+});
+
+test("queryTerms: 'stored', 'store' and 'saved' all point at repositories", () => {
+  for (const q of ["where are orders stored", "where do we store orders", "where are orders saved"]) {
+    assert.ok(queryTerms(q).some((t) => t.term === "repository"), q);
+  }
+});
+
+test("rank: 'what endpoints exist' prefers classes that have endpoints over ones that merely mention the word", () => {
+  const index = buildIndex([
+    cls({ name: "EndpointLogger", kind: "component", rawBody: "" }),
+    cls({
+      name: "InvoiceResource",
+      kind: "controller",
+      endpoints: [{ httpMethod: "GET", path: "/invoices", methodName: "list" }],
+    }),
+    cls({ name: "InvoiceService", rawBody: "" }),
+  ]);
+  const names = rank(index, "what endpoints exist for invoices").map((r) => r.cls.name);
+  assert.equal(names[0], "InvoiceResource");
+});
+
+test("queryTerms: joins a word with a following particle ('log in' -> login) but not with filler ('the database')", () => {
+  assert.ok(queryTerms("how do I log in").some((t) => t.term === "login"));
+  assert.ok(!queryTerms("which class talks to the database").some((t) => t.term === "thedatabas"));
+});

@@ -54,3 +54,32 @@ test("does not follow symbolic links", (t) => {
     assert.deepEqual(rel(root, findJavaFiles(root)), ["src/A.java"]);
   });
 });
+
+test("skips src/test (test-only Spring classes) but scans a package named test inside src/main", () => {
+  withTree(
+    [
+      "svc/src/test/java/com/acme/TestConfig.java",
+      "src/test/java/com/acme/OtherTestConfig.java",
+      "svc/src/main/java/com/acme/test/Probe.java",
+      "svc/src/main/java/com/acme/Real.java",
+    ],
+    (root) => {
+      assert.deepEqual(rel(root, findJavaFiles(root)), [
+        "svc/src/main/java/com/acme/Real.java",
+        "svc/src/main/java/com/acme/test/Probe.java",
+      ]);
+    }
+  );
+});
+
+test("a scan root that is itself named src still has its test directory scanned", () => {
+  const outer = mkdtempSync(join(tmpdir(), "springlens-srcroot-"));
+  try {
+    const root = join(outer, "src");
+    mkdirSync(join(root, "test"), { recursive: true });
+    writeFileSync(join(root, "test", "A.java"), "class A {}");
+    assert.deepEqual(rel(root, findJavaFiles(root)), ["test/A.java"]);
+  } finally {
+    rmSync(outer, { recursive: true, force: true });
+  }
+});
