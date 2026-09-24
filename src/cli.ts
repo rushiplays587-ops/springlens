@@ -49,10 +49,11 @@ By default SpringLens runs entirely locally and writes a structural report
        Requires the ANTHROPIC_API_KEY environment variable.
 
 ask    answers a question about the repo. By default it is local: it ranks the
-       repo's classes by keyword relevance and prints the best matches, and
-       makes no AI answer. With --ai it also sends your question plus the source
-       of only the top ${DEFAULT_RESULT_COUNT} matching classes (up to ${MAX_BODY_CHARS} characters each,
-       string literals included) to the Anthropic API for a written answer.
+       repo's classes and config files (application.yml etc.) by keyword relevance
+       and prints the best ${DEFAULT_RESULT_COUNT} matches, and makes no AI answer. With --ai it also
+       sends your question plus the source of the matching classes (up to
+       ${MAX_BODY_CHARS} characters each, string literals included) and the matching config
+       files as key = value lines (secrets redacted) to the Anthropic API.
 `);
 }
 

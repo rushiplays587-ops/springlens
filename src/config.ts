@@ -8,7 +8,7 @@ import {
   ConfigSummary,
   GatewayRoute,
 } from "./model.js";
-import { redactValue, truncate } from "./redact.js";
+import { redactText, redactValue, truncate } from "./redact.js";
 
 /**
  * Reads Spring Boot configuration files (application and bootstrap, .yml/.yaml/
@@ -135,6 +135,11 @@ function flatten(
   }
 }
 
+/** One line of a parser error, scrubbed: parser messages can quote file content, which may hold a secret. */
+function safeError(message: string): string {
+  return truncate(redactText(message.split(/\r?\n/)[0]), 160);
+}
+
 /** Each YAML document as flat properties. A document that fails to parse is skipped and its error returned. */
 function parseYamlText(text: string): { docs: { props: RawProp[]; truncated: boolean }[]; errors: string[] } {
   const docs: { props: RawProp[]; truncated: boolean }[] = [];
@@ -148,7 +153,7 @@ function parseYamlText(text: string): { docs: { props: RawProp[]; truncated: boo
 
   for (const doc of list.slice(0, MAX_DOCUMENTS)) {
     if (doc.errors.length > 0) {
-      errors.push(doc.errors[0].message.split("\n")[0]);
+      errors.push(safeError(doc.errors[0].message));
       continue;
     }
     try {
@@ -158,7 +163,7 @@ function parseYamlText(text: string): { docs: { props: RawProp[]; truncated: boo
       flatten(js, "", props, 0, state);
       docs.push({ props, truncated: state.truncated });
     } catch (err) {
-      errors.push((err as Error).message.split("\n")[0]);
+      errors.push(safeError((err as Error).message));
     }
   }
   if (list.length > MAX_DOCUMENTS) errors.push(`more than ${MAX_DOCUMENTS} YAML documents; the rest were ignored`);
@@ -383,7 +388,7 @@ export function parseConfigFile(relPath: string, text: string): ConfigFile {
     }
   } catch (err) {
     base.documents = [];
-    base.error = `unparsable (${truncate((err as Error).message.split("\n")[0], 160)})`;
+    base.error = `unparsable (${safeError((err as Error).message)})`;
   }
   return base;
 }

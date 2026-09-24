@@ -358,3 +358,9 @@ test("bindClassConfig attaches @Value keys to classes that have them", () => {
   assert.deepEqual(cls.configKeys, [{ key: "x.y", hasDefault: true }]);
   assert.equal(other.configKeys, undefined);
 });
+
+test("parser error messages are scrubbed: a secret quoted in a YAML error does not reach the file's error text", () => {
+  const cfg = parseConfigFile("application.yml", "a: *pw?token=FAKE-ERR-SECRET-1\n");
+  assert.ok(cfg.error, "expected an error");
+  assert.ok(!cfg.error!.includes("FAKE-ERR-SECRET-1"), cfg.error);
+});

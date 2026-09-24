@@ -28,13 +28,23 @@ Point it at a Spring Boot repo and it writes `springlens-report.md`:
   full coverage.
 - **Optional AI narrative** — a plain-English explanation per class (see
   [Privacy](#privacy)).
+- **Configuration files** — `application*` and `bootstrap*` files (`.yml`,
+  `.yaml`, `.properties`, multi-document YAML with `---`) summarised per file:
+  application name, port and context path, profiles, datasource kind and host,
+  Eureka and config-server settings, **gateway routes** (id, target, predicates,
+  filters) as a table, and the property groups present. Classes that bind
+  `@ConfigurationProperties(prefix = ...)` or read `@Value("${...}")` are linked
+  to the keys they use, and keys no scanned file defines are flagged. Secrets are
+  redacted (see [Configuration files](#configuration-files)).
+- **HTML report** — `--html` also writes `springlens-report.html`, the same
+  report as one self-contained page (inline styles, no scripts, no external
+  requests), readable on screen and in print.
 - **Ask the codebase** — `springlens ask <repo> "<question>"` ranks the repo's
-  classes against your question and prints the best matches, locally (see
-  [Asking questions](#asking-questions)).
+  classes and config files against your question and prints the best matches,
+  locally (see [Asking questions](#asking-questions)).
 
-Not built yet: `application.yml` / properties analysis, JPA entity
-relationship mapping, and upgrade-path guidance beyond the two rules above.
-See the [Roadmap](#roadmap).
+Not built yet: JPA entity relationship mapping, upgrade-path guidance beyond the
+two rules above, and evaluation of Spring profiles. See the [Roadmap](#roadmap).
 
 ## Usage
 
@@ -45,13 +55,58 @@ npm run build
 # local structural report — nothing leaves your machine:
 npm start -- ./path-to-your-spring-boot-repo
 
+# also write springlens-report.html (self-contained page, nothing leaves your machine):
+npm start -- ./path-to-your-spring-boot-repo --html
+
 # also generate AI narrative (sends class source to Anthropic — see Privacy):
 export ANTHROPIC_API_KEY=sk-ant-...
 npm start -- ./path-to-your-spring-boot-repo --ai
 ```
 
-The report is written to `springlens-report.md` inside the scanned repo. It
-lists the scanned directory's name only, not absolute paths.
+The report is written to `springlens-report.md` inside the scanned repo (and
+`springlens-report.html` with `--html`). It lists the scanned directory's name
+only, not absolute paths. Everything taken from the repo — class names, paths,
+config keys and values — is treated as untrusted text: it is escaped in the HTML
+and placed in code spans in the Markdown, and the HTML page carries a
+Content-Security-Policy that forbids scripts and network access.
+
+## Configuration files
+
+SpringLens reads `application.*` and `bootstrap.*` files (also
+`application-<profile>.*`) found anywhere in the repo except build output and
+`src/test`. YAML is parsed with the [`yaml`](https://github.com/eemeli/yaml)
+package (the tool's one runtime dependency besides the Anthropic SDK; it has no
+dependencies of its own), so anchors, multi-line strings, lists and
+multi-document files are handled properly. `.properties` files, including
+Spring's `#---` document separator, use a small dedicated reader.
+
+Files are shown **as written**. SpringLens does not evaluate Spring profiles,
+merge files, expand `${...}` placeholders, resolve environment variables or fetch
+from a config server: a value may be overridden at runtime, and a key missing from
+the scanned files may still be set elsewhere. Gateway routes are read from
+properties (`spring.cloud.gateway...routes`, including the `server.webflux` and
+`server.webmvc` forms); routes declared in Java (`RouteLocator` beans) are not seen.
+`spring.config.import` files are listed but not followed.
+
+**Secrets.** Config files hold passwords and tokens, so values are redacted at
+the moment a file is read, before anything is stored, printed or sent anywhere:
+
+- the value of any key with `password`, `passwd`, `pwd`, `secret`, `token`, `key`,
+  `credential`, `private`, `auth`, `cert`, `salt`, `passphrase` or `signature` in
+  its name is replaced by `[redacted]` (the key name is kept; a bare `${ENV_VAR}`
+  reference with no default is shown, since it reveals nothing);
+- credentials in URLs (`user:pass@host`), secret-looking query or JDBC parameters
+  (`?password=...`) and the default in a secret-named placeholder
+  (`${DB_PASSWORD:changeme}`) are redacted in any value;
+- values shaped like well-known tokens (AWS, GitHub, GitLab, Slack, OpenAI/Anthropic
+  style, JWTs, PEM private keys) and long opaque letter-and-digit strings are redacted.
+
+This is pattern-based and errs toward hiding too much (a key such as
+`monkey-mode` matches `key`). It cannot recognise an arbitrary secret stored under
+an innocent-looking key with an innocent-looking value, so review the report
+before sharing it. Config files are also size-limited (256 KB), depth-limited and
+alias-limited; a file that cannot be parsed is listed as unparsable and the rest of
+the scan continues. Nothing in a config file is ever executed.
 
 ## Asking questions
 
@@ -62,15 +117,20 @@ npm start -- ask ./path-to-your-spring-boot-repo "which class talks to the datab
 
 **Default mode is fully local.** SpringLens indexes every class it found (name,
 kind, annotations, endpoint paths and handler names, injected dependencies,
-file path and source words), ranks them against your question with BM25, and
+file path and source words) and every config file (application name, port,
+routes, datasource, keys and values), so questions like "how does the api
+gateway route requests" or "which port does the config server run on" are
+answered from the config itself. It ranks them against your question with BM25, and
 prints the top five: file, kind, endpoints, what each depends on, what uses
 it, and which of your words matched. Matches on a class's name, kind or
 endpoints count for more than words in its body. No AI answer is generated and
 nothing leaves your machine.
 
 **With `--ai`** it additionally sends your question plus the source of *only
-those top classes* (up to 4,000 characters each, string literals included) to
-the Anthropic API and prints a written answer that cites class names. It
+those top classes* (up to 4,000 characters each, string literals included) and
+any retrieved config files (as `key = value` lines, at most 60 lines each, with
+secrets redacted a second time before sending) to the Anthropic API and prints a
+written answer that cites class names. It
 prints exactly which classes are being sent first. Like the report, this needs
 `ANTHROPIC_API_KEY`; without it `--ai` just prints the local results. If nothing
 matches your question, nothing is sent. Repository source is treated as
@@ -102,8 +162,14 @@ opt-in for that reason; passing `--ai` without `ANTHROPIC_API_KEY` just
 produces the local report. A failed AI call for one class falls back to the
 structural entry for that class; it doesn't stop the run. Repository source is
 treated as untrusted data in the prompt. `ask --ai` sends far less: your
-question and the top five retrieved classes only (see
-[Asking questions](#asking-questions)).
+question, the top retrieved classes and, if they matched, the config files
+that scored highest, as `key = value` lines with secrets redacted (see
+[Asking questions](#asking-questions)). **Config values are never sent
+unredacted:** they are redacted when the file is read (see
+[Configuration files](#configuration-files)) and again when a prompt is built.
+The per-class `--ai` narrative does not include config files, but a secret
+hard-coded as a string literal inside a Java class is still part of that class's
+source and would be sent.
 
 ## How the extraction works
 
@@ -117,9 +183,10 @@ annotation values are then read from the original text.
 
 Known limitations (documented, not oversights):
 
-- Records and Kotlin/Groovy sources are not parsed. Record DTOs are not Spring
-  beans, so this rarely matters, but a record annotated as a bean (for example
-  `@ConfigurationProperties`) is missed.
+- Kotlin/Groovy sources are not parsed. Records are picked up only when they
+  carry a Spring role annotation (for example `@ConfigurationProperties`);
+  their components are not followed as dependencies, and plain DTO records are
+  not listed.
 - Test sources (`src/test`) are skipped, so test-only configuration classes do
   not appear in the map.
 - Classes with the same simple name in different packages are merged by name.
@@ -142,7 +209,7 @@ If accuracy stops being enough in practice, a real AST parser (e.g.
 `src/parser.ts`.
 
 ```bash
-npm test   # builds, then runs the regression suites (parser, scanner, dependency scan, narration, ask, CLI, fixtures)
+npm test   # builds, then runs the regression suites (parser, scanner, dependency scan, config and redaction, report and HTML, narration, ask, CLI, fixtures)
 ```
 
 ## Roadmap
@@ -156,7 +223,8 @@ npm test   # builds, then runs the regression suites (parser, scanner, dependenc
       scanner and CLI fixes; AI made opt-in
 - [x] **Sprint 4** — "ask the codebase": local keyword retrieval, with an
       opt-in AI answer over only the retrieved classes
-- [ ] **Sprint 5** — polish: `application.yml` analysis, clean HTML report output, docs
+- [x] **Sprint 5** — `application.yml`/properties analysis (with secret redaction),
+      gateway routing table, config-aware `ask`, self-contained HTML report
 - [ ] **Sprint 6** — launch
 
 ## Why open source
