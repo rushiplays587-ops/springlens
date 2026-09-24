@@ -91,21 +91,27 @@ properties (`spring.cloud.gateway...routes`, including the `server.webflux` and
 **Secrets.** Config files hold passwords and tokens, so values are redacted at
 the moment a file is read, before anything is stored, printed or sent anywhere:
 
-- the value of any key with `password`, `passwd`, `pwd`, `secret`, `token`, `key`,
-  `credential`, `private`, `auth`, `cert`, `salt`, `passphrase` or `signature` in
-  its name is replaced by `[redacted]` (the key name is kept; a bare `${ENV_VAR}`
-  reference with no default is shown, since it reveals nothing);
-- credentials in URLs (`user:pass@host`), secret-looking query or JDBC parameters
-  (`?password=...`) and the default in a secret-named placeholder
+- the value of any key with `password`, `passwd`, `pass`, `pwd`, `pw`, `secret`, `token`,
+  `key`, `credential`, `private`, `auth`, `cert`, `salt`, `passphrase`, `signature`, `sig`,
+  `hmac`, `cookie`, `sessionid`, `jwt`, `dsn` or `pfx` in its name is replaced by
+  `[redacted]` (the key name is kept; a bare `${ENV_VAR}` reference with no default is
+  shown, since it reveals nothing);
+- credentials in URLs (`user:pass@host`, `redis://:pass@host`, a lone `token@host`, Oracle
+  `user/pass@host`), secret-looking parameters written as `name=value`, `name: value` or
+  `"name":"value"` inside any value (query strings, JDBC properties, JSON in a property),
+  `Basic` / `Bearer` credentials, header values on gateway filters and predicates whose
+  header name looks secret, and the default in a secret-named placeholder
   (`${DB_PASSWORD:changeme}`) are redacted in any value;
-- values shaped like well-known tokens (AWS, GitHub, GitLab, Slack, OpenAI/Anthropic
-  style, JWTs, PEM private keys) and long opaque letter-and-digit strings are redacted.
+- values shaped like well-known tokens (AWS, GitHub, GitLab, Slack incl. webhook paths,
+  OpenAI/Anthropic style, JWTs, PEM private keys) and long opaque letter-and-digit strings
+  are redacted.
 
 This is pattern-based and errs toward hiding too much (a key such as
 `monkey-mode` matches `key`). It cannot recognise an arbitrary secret stored under
 an innocent-looking key with an innocent-looking value, so review the report
-before sharing it. Config files are also size-limited (256 KB), depth-limited and
-alias-limited; a file that cannot be parsed is listed as unparsable and the rest of
+before sharing it. Look-alike Unicode letters (a Cyrillic "а" in `password`) are not
+folded. Config files are also size-limited (256 KB), depth-limited and
+alias-limited, and no single value is scanned beyond 4,096 characters; a file that cannot be parsed is listed as unparsable and the rest of
 the scan continues. Nothing in a config file is ever executed.
 
 ## Asking questions
@@ -164,8 +170,8 @@ structural entry for that class; it doesn't stop the run. Repository source is
 treated as untrusted data in the prompt. `ask --ai` sends far less: your
 question, the top retrieved classes and, if they matched, the config files
 that scored highest, as `key = value` lines with secrets redacted (see
-[Asking questions](#asking-questions)). **Config values are never sent
-unredacted:** they are redacted when the file is read (see
+[Asking questions](#asking-questions)). **Config values are redacted before they can be sent**
+(within the limits of the pattern-based redaction described there): they are redacted when the file is read (see
 [Configuration files](#configuration-files)) and again when a prompt is built.
 The per-class `--ai` narrative does not include config files, but a secret
 hard-coded as a string literal inside a Java class is still part of that class's

@@ -449,3 +449,58 @@ test(".properties files with tens of thousands of continuation lines parse in bo
   assert.ok(Date.now() - started < 2000, `took ${Date.now() - started} ms`);
   assert.ok(cfg.documents.length >= 0);
 });
+
+// ---- second review round ----
+
+test("profile conditions given as YAML lists (on-profile and legacy spring.profiles) are shown", () => {
+  const cfg = parseConfigFile(
+    "application.yml",
+    "server:\n  port: 1\n---\nspring:\n  config:\n    activate:\n      on-profile:\n        - prod\n        - eu\nserver:\n  port: 2\n---\nspring:\n  profiles:\n    - a\n    - b\nserver:\n  port: 3\n"
+  );
+  assert.deepEqual(cfg.documents.map((d) => d.onProfile), [null, "prod, eu", "a, b"]);
+});
+
+test("JDBC targets: ${HOST:default} placeholders stay whole, '@' in the query string is ignored, failover hosts are all listed", () => {
+  const target = (url: string) =>
+    parseConfigFile("application.properties", `spring.datasource.url=${url}\n`).documents[0].summary.backends[0]?.target;
+  assert.equal(target("jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/app"), "${DB_HOST:localhost}:${DB_PORT:3306}");
+  assert.equal(target("jdbc:postgresql://h/db?options=-c%20a@b"), "h");
+  assert.equal(target("jdbc:postgresql://h1:5432,h2:5432/db"), "h1:5432, h2:5432");
+  assert.equal(target("jdbc:mysql://u:pw@dbhost:3306/x"), "dbhost:3306");
+  assert.equal(target("jdbc:sqlserver://h:1433;databaseName=x"), "h:1433");
+});
+
+test("a Kafka bootstrap list written as a YAML list is one backend entry", () => {
+  const s = parseConfigFile("application.yml", "spring:\n  kafka:\n    bootstrap-servers:\n      - k1:9092\n      - k2:9092\n").documents[0].summary;
+  assert.deepEqual(s.backends.map((b) => [b.kind, b.target, b.key]), [["kafka", "k1:9092,k2:9092", "spring.kafka.bootstrap-servers"]]);
+});
+
+test("gateway predicates and filters written as a single scalar instead of a list are found", () => {
+  const s = parseConfigFile(
+    "application.yml",
+    "spring:\n  cloud:\n    gateway:\n      routes:\n        - id: s\n          uri: lb://s\n          predicates: Path=/s/**\n          filters: StripPrefix=1\n"
+  ).documents[0].summary;
+  assert.deepEqual(s.routes[0].predicates, ["Path=/s/**"]);
+  assert.deepEqual(s.routes[0].filters, ["StripPrefix=1"]);
+});
+
+test("secrets in the JSON-in-a-property form and key: value form never reach the parsed model", () => {
+  const cfg = parseConfigFile(
+    "application.properties",
+    [
+      'spring.application.json={"spring.datasource.password":"FAKE-APPJSON-1"}',
+      "app.cfg=password: FAKE-COLON-2",
+      "jdbc.address=jdbc:mysql://address=(host=h)(user=u)(password=FAKE-ADDR-3)/db",
+      "mongo.url=mongodb://u:fa/ke-SLASH-4@h/db",
+    ].join("\n")
+  );
+  const dump = JSON.stringify(cfg);
+  for (const fake of ["FAKE-APPJSON-1", "FAKE-COLON-2", "FAKE-ADDR-3", "ke-SLASH-4"]) assert.ok(!dump.includes(fake), `${fake} leaked`);
+});
+
+test("a huge single-token property value parses in bounded time", () => {
+  const started = Date.now();
+  const cfg = parseConfigFile("application.properties", "a=" + "x".repeat(200_000) + "\nb=" + "${pass".repeat(30_000) + "\n");
+  assert.ok(Date.now() - started < 3000, `took ${Date.now() - started} ms`);
+  assert.ok(cfg.documents.length >= 0);
+});

@@ -151,6 +151,7 @@ function parseYamlText(text: string): {
   const errors: string[] = [];
   const parsed = parseAllDocuments(text, {
     merge: true,
+    uniqueKeys: false,
     prettyErrors: false,
     version: "1.2",
     logLevel: "silent",
@@ -185,9 +186,19 @@ function kindFromJdbc(url: string): { kind: string; target: string } | null {
   if (!m) return null;
   const kind = m[1].toLowerCase();
   const rest = m[2];
-  const afterAt = rest.includes("@") ? rest.slice(rest.lastIndexOf("@") + 1) : rest;
-  const net = afterAt.replace(/^\/\//, "").match(/^(\[[^\]]+\]|[^/?;:]+)(?::(\d+))?/);
-  if ((rest.startsWith("//") || rest.includes("@")) && net) return { kind, target: net[2] ? `${net[1]}:${net[2]}` : net[1] };
+  // Oracle thin: thin:user/password@host:port:sid or @//host:port/service. Anything else with "//":
+  // //[user:password@]host[:port][,host2[:port]]/db?params — the userinfo "@" is inside the authority only.
+  let authority: string | null = null;
+  if (kind === "oracle" && rest.includes("@")) authority = rest.slice(rest.lastIndexOf("@") + 1).replace(/^\/\//, "").split(/[/?;]/)[0];
+  else if (rest.startsWith("//")) {
+    authority = rest.slice(2).split(/[/?;]/)[0];
+    if (authority.includes("@")) authority = authority.slice(authority.lastIndexOf("@") + 1);
+  }
+  if (authority !== null && authority !== "") {
+    // Keep ${HOST:default} placeholders whole and allow IPv6 literals; several hosts (failover) are all listed.
+    const hosts = authority.match(/(?:\$\{[^}]*\}|\[[^\]]*\]|[^,])+/g) ?? [authority];
+    return { kind, target: hosts.map((h) => h.trim()).join(", ") };
+  }
   // jdbc:h2:mem:testdb, jdbc:hsqldb:file:/path — no network host
   return { kind, target: rest.split(/[;?]/)[0] || "(unspecified)" };
 }
@@ -217,6 +228,11 @@ function redactShortcut(text: string): string {
 function collectShortcutList(props: ConfigProperty[], listPath: string): string[] {
   const items = new Map<number, { direct?: string; name?: string; args: string[] }>();
   for (const p of props) {
+    if (p.key === listPath) {
+      // `predicates: Path=/a/**` written as a single scalar instead of a list
+      items.set(-1, { direct: p.value, args: [] });
+      continue;
+    }
     if (!p.key.startsWith(listPath + "[")) continue;
     const m = p.key.slice(listPath.length).match(/^\[(\d+)\](?:\.(.+))?$/);
     if (!m) continue;
@@ -283,10 +299,12 @@ function summarize(props: ConfigProperty[]): ConfigSummary {
     }
   }
   for (const b of BACKEND_KEYS) {
-    const p = byNorm.get(b.norm);
-    if (p && p.value) {
-      const target = b.parse(p.value);
-      if (target) backends.push({ kind: b.kind, target, key: p.key });
+    // The value may be a scalar or a YAML list (key[0], key[1], ...): join the list.
+    const matching = props.filter((p) => normKey(p.key) === b.norm || normKey(p.key).startsWith(b.norm + "["));
+    const values = matching.map((p) => p.value).filter((v) => v !== "");
+    if (values.length > 0) {
+      const target = b.parse(values.join(","));
+      if (target) backends.push({ kind: b.kind, target, key: matching[0].key.replace(/\[\d+\]$/, "") });
     }
   }
 
@@ -356,11 +374,17 @@ function toProperties(raw: RawProp[]): ConfigProperty[] {
   });
 }
 
+/** The profile condition of a document: on-profile (scalar or list), or the legacy spring.profiles. */
 function documentProfile(props: ConfigProperty[]): string | null {
-  const onProfile = props.find((p) => normKey(p.key) === normKey("spring.config.activate.on-profile"));
-  if (onProfile) return onProfile.value;
-  const legacy = props.find((p) => p.key === "spring.profiles");
-  return legacy ? legacy.value : null;
+  const collect = (key: string) =>
+    props
+      .filter((p) => normKey(p.key) === normKey(key) || normKey(p.key).startsWith(normKey(key) + "["))
+      .map((p) => p.value)
+      .filter((v) => v !== "");
+  const onProfile = collect("spring.config.activate.on-profile");
+  if (onProfile.length > 0) return onProfile.join(", ");
+  const legacy = collect("spring.profiles");
+  return legacy.length > 0 ? legacy.join(", ") : null;
 }
 
 /**

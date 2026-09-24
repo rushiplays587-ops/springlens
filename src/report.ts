@@ -95,7 +95,8 @@ function dependencyRiskBlocks(model: RepoModel): Block[] {
         { b: f.severity === "critical" ? "🔴 critical" : "🟡 advisory" },
         " ",
         { code: `${f.dependency.groupId}:${f.dependency.artifactId}` },
-        ` — ${f.message}`,
+        " — ",
+        { text: f.message },
       ]),
     });
   }
@@ -155,8 +156,13 @@ function documentBlocks(doc: ConfigDocument, heading: Span[] | null): Block[] {
 
 function configFileBlocks(cfg: ConfigFile): Block[] {
   const blocks: Block[] = [{ t: "h", level: 3, text: [{ code: cfg.file }] }];
-  const tags = [cfg.bootstrap ? "bootstrap" : "application", cfg.format, cfg.profile ? `profile ${cfg.profile}` : "default profile"];
-  blocks.push({ t: "p", text: [tags.join(", ")] });
+  blocks.push({
+    t: "p",
+    text: [
+      `${cfg.bootstrap ? "bootstrap" : "application"}, ${cfg.format}, `,
+      ...(cfg.profile ? ["profile ", { code: cfg.profile }] : ["default profile"]),
+    ],
+  });
   if (cfg.error) blocks.push({ t: "p", text: ["Could not be fully read: ", { code: cfg.error }] });
 
   cfg.documents.forEach((doc, i) => {

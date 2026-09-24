@@ -230,3 +230,27 @@ test("a narrative attached to a class is rendered through the untrusted-prose pa
   const md = renderMarkdownReport(model);
   assert.ok(!md.includes("[x](javascript:alert(9))"));
 });
+
+// ---- second review round ----
+
+test("Markdown: a config file named like a Markdown link or image cannot produce a live link", () => {
+  const model = hostileModel();
+  model.configs = [
+    parseConfigFile("src/application-[click](http://evil.test).yml", "a: 1\n"),
+    parseConfigFile("src/application-![img](http://evil.test/x.png).properties", "a=1\n"),
+  ];
+  const md = renderMarkdownReport(model);
+  const outsideCode = md.split("\n").map((l) => l.replace(/(`+)(.+?)\1(?!`)/g, "")).join("\n");
+  assert.ok(!/\]\(http/.test(outsideCode), "a link outside a code span");
+  assert.ok(!/!\[/.test(outsideCode), "an image outside a code span");
+});
+
+test("Markdown: italic and bold spans escape link syntax, and dependency risk messages are treated as prose", () => {
+  const md = renderMarkdown([{ t: "p", text: [{ i: "[a](http://evil.test)" }, { b: "![i](http://evil.test/x.png)" }] }]);
+  assert.ok(!/(?<!\\)\]\(http/.test(md), md);
+  const model = hostileModel();
+  model.riskFindings = [{ dependency: { groupId: "g", artifactId: "a", version: "[x](http://evil.test)" }, severity: "advisory", message: "Version `[x](http://evil.test)` is odd" }];
+  const report = renderMarkdownReport(model);
+  const outsideCode = report.split("\n").map((l) => l.replace(/(`+)(.+?)\1(?!`)/g, "")).join("\n");
+  assert.ok(!/(?<!\\)\]\(http:\/\/evil/.test(outsideCode));
+});

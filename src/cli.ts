@@ -222,7 +222,7 @@ async function main(argv: string[]): Promise<void> {
 
   console.log(`Report written to: ${outputPath}`);
   if (wantsHtml) console.log(`HTML report written to: ${htmlPath}`);
-  console.log(`Ask a question about the codebase: springlens ask ${target} "<question>"`);
+  console.log(`Ask a question about the codebase: springlens ask ${JSON.stringify(target)} "<question>"`);
 }
 
 main(process.argv.slice(2)).catch((err) => {

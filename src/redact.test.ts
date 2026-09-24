@@ -135,7 +135,8 @@ test("secret words: pass, pw, pwd and friends in keys, query parameters and plac
 });
 
 test("Basic and Bearer credentials are redacted under any key, but the plain word is left alone", () => {
-  assert.equal(redactText("Authorization: Basic dXNlcjpwYXNz"), `Authorization: Basic ${REDACTED}`);
+  assert.ok(!redactText("Authorization: Basic dXNlcjpwYXNz").includes("dXNlcjpwYXNz"));
+  assert.equal(redactText("hdr Basic dXNlcjpwYXNz"), `hdr Basic ${REDACTED}`);
   assert.equal(redactText("Bearer abc.def-ghi"), `Bearer ${REDACTED}`);
   assert.equal(redactText("Token bucket configuration for Basic auth"), "Token bucket configuration for Basic auth");
 });
@@ -155,4 +156,48 @@ test("a long all-lowercase hyphenated service name is not mistaken for a key", (
 
 test("stripControls removes terminal escapes and newlines from printed text", () => {
   assert.equal(stripControls("a\u001b[31mred\u001b[0m\nb\u0007"), "a [31mred [0m b ");
+});
+
+// ---- second review round ----
+
+test("secrets written as key: value, JSON, quoted or space-separated pairs inside an innocent value are redacted", () => {
+  const cases: [string, string][] = [
+    ['{"spring.datasource.password":"FAKE-JSON-1"}', "FAKE-JSON-1"],
+    ["password: FAKE-YAML-2", "FAKE-YAML-2"],
+    ["secret = FAKE-SP-3", "FAKE-SP-3"],
+    ["X-Api-Key: FAKE-HDR-4", "FAKE-HDR-4"],
+    ['password="FAKE 5 with space" next', "with space"],
+    ["jdbc:mysql://address=(host=h)(user=u)(password=FAKE-ADDR-6)/db", "FAKE-ADDR-6"],
+    ["https://x.blob.core.windows.net/c?sig=FAKE-SIG-7&se=1", "FAKE-SIG-7"],
+    ["https://hooks.slack.com/services/T000/B000/FAKE8", "FAKE8"],
+  ];
+  for (const [input, secret] of cases) {
+    const out = redactText(input);
+    assert.ok(!out.includes(secret), `${secret} survived: ${out}`);
+    assert.equal(redactText(out), out, `not idempotent for ${input}`);
+  }
+});
+
+test("URL passwords containing a slash, and user:password@host:port lists without a scheme, are redacted; a port followed by a path is not", () => {
+  assert.ok(!redactText("mongodb://u:pa/ss@h/db").includes("pa/ss"));
+  assert.ok(!redactText("redis://u:pa/ss@h").includes("pa/ss"));
+  assert.ok(!redactText("h1:9092,u:FAKE-K@h2:9092").includes("FAKE-K"));
+  assert.equal(redactText("http://host:8080/users/a@b.com"), "http://host:8080/users/a@b.com");
+  assert.equal(redactText("h1:9092,h2:9092"), "h1:9092,h2:9092");
+});
+
+test("key spellings: pswd/psw/sig/hmac/cookie/sessionid/jwt/dsn/pfx, and zero-width or fullwidth tricks", () => {
+  for (const k of ["a.pswd", "a.psw", "a.sig", "a.hmac", "a.cookie", "a.sessionid", "a.jwt", "a.dsn", "a.pfx", "pass​word", "ｐａｓｓｗｏｒｄ", "pa­ssword"]) {
+    assert.equal(isSecretKey(k), true, JSON.stringify(k));
+  }
+});
+
+test("redaction is linear-time on a single huge token (no regex blow-up on a 200 KB value)", () => {
+  const started = Date.now();
+  for (const huge of ["x".repeat(200_000), "${pass".repeat(40_000), "a+.".repeat(60_000), "a1".repeat(100_000), "pass".repeat(50_000)]) {
+    redactText(huge);
+    redactValue("some.key", huge);
+    redactValue("some.password", huge);
+  }
+  assert.ok(Date.now() - started < 3000, `took ${Date.now() - started} ms`);
 });

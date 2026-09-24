@@ -46,8 +46,8 @@ function mdSpans(spans: Span[]): string {
       if (typeof s === "string") return mdEscapeText(s);
       if ("code" in s) return mdCode(s.code);
       if ("text" in s) return mdProse(s.text);
-      if ("i" in s) return `*${mdEscapeText(s.i).replace(/[*\\]/g, "\\$&")}*`;
-      return `**${mdEscapeText(s.b).replace(/[*\\]/g, "\\$&")}**`;
+      if ("i" in s) return `*${mdProse(s.i)}*`;
+      return `**${mdProse(s.b)}**`;
     })
     .join("");
 }

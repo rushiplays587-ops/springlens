@@ -17,26 +17,40 @@ export const MAX_VALUE_CHARS = 300;
 
 // Any dotted segment containing one of these marks the whole key secret.
 const SECRET_WORDS =
-  "password|passwd|passphrase|pass|pwd|pw|secret|token|key|credential|private|auth|cert|salt|signature";
+  "password|passwd|passphrase|pass|pswd|psw|pwd|pw|secret|token|key|credential|private|auth|cert|salt|signature|sig|hmac|cookie|sessionid|jwt|dsn|pfx";
 const SECRET_KEY = new RegExp(SECRET_WORDS, "i");
 
-export function isSecretKey(key: string): boolean {
-  return SECRET_KEY.test(key);
+/** Normalises compatibility forms and drops zero-width characters, so "pass​word" and fullwidth letters are still caught. */
+function foldKey(key: string): string {
+  return key.normalize("NFKC").replace(/[​-‏⁠﻿­]/g, "");
 }
+
+export function isSecretKey(key: string): boolean {
+  return SECRET_KEY.test(foldKey(key));
+}
+
+/** Longest text the pattern passes will scan; longer values are cut first (redaction is quadratic on a single huge token). */
+export const MAX_REDACT_INPUT = 4096;
 
 // A bare environment placeholder with no default, e.g. ${DB_PASSWORD}, reveals nothing and is useful to read.
 const BARE_PLACEHOLDER = /^\$\{[A-Za-z0-9_.\-]+\}$/;
 
 // scheme://user:password@host — the user may be empty (redis://:pw@host) and the password may contain "@".
-const URL_USERINFO = /([a-z][a-z0-9+.\-]*:\/\/)([^\s:@\/]*):([^\s\/]*)@/gi;
+// The password may contain "/" too, unless it starts like a port followed by a path (http://host:8080/x@y).
+const URL_USERINFO = /(?<![a-z0-9+.\-])([a-z][a-z0-9+.\-]*:\/\/)([^\s:@\/]*):(?!\d+(?:\/|$))([^\s]*)@/gi;
 // scheme://token@host — a lone userinfo is often an access token (git over https); "git@" is only a user name.
-const URL_LONE_USERINFO = /([a-z][a-z0-9+.\-]*:\/\/)(?!git@)([^\s:@\/]+)@/gi;
+const URL_LONE_USERINFO = /(?<![a-z0-9+.\-])([a-z][a-z0-9+.\-]*:\/\/)(?!git@)([^\s:@\/]+)@/gi;
+// user:password@host:port with no scheme (Kafka/Redis host lists)
+const BARE_USERINFO = /(^|[,\s=])([A-Za-z0-9._\-]+):([^\s,@\/]+)@(?=[A-Za-z0-9.\-]+:\d)/g;
+// Slack incoming-webhook secrets live in the path
+const SLACK_WEBHOOK = /(hooks\.slack\.com\/services\/)[A-Za-z0-9\/]+/gi;
 // jdbc:oracle:thin:user/password@host
 const JDBC_SLASH_CREDENTIALS = /(jdbc:[a-z0-9]+:[a-z0-9]+:)([^\s\/@:]+)\/([^\s@]+)@/gi;
 // HTTP Authorization header values
 const AUTH_SCHEME = /\b(Basic|Bearer)\s+[A-Za-z0-9._~+\/=\-]{6,}/g;
+// name=value, name: value, "name":"value", name="a b" — where the NAME contains a secret word.
 const SECRET_PARAM = new RegExp(
-  `(^|[?&;,\\s])([^=&;,\\s?]*(?:${SECRET_WORDS})[^=&;,\\s?]*)=([^&;,\\s]*)`,
+  `(^|[?&;,\\s\\[(]|(?<!\\$)\\{)(["']?)([\\w.\\-]*(?:${SECRET_WORDS})[\\w.\\-]*)\\2\\s*[=:]\\s*(\\[redacted\\]|"[^"]*"|'[^']*'|[^&;,\\s}\\])"']*)`,
   "gi"
 );
 const SECRET_PLACEHOLDER_DEFAULT = new RegExp(
@@ -88,13 +102,16 @@ export function redactRouteArgs(args: string[]): string[] {
 }
 
 /** Redacts secrets embedded in free text: URL credentials, secret query parameters, token shapes, placeholder defaults. */
-export function redactText(text: string): string {
+export function redactText(input: string): string {
+  const text = input.length > MAX_REDACT_INPUT ? input.slice(0, MAX_REDACT_INPUT) + "…" : input;
   let out = text.replace(PEM_BLOCK, REDACTED);
+  out = out.replace(SLACK_WEBHOOK, `$1${REDACTED}`);
   out = out.replace(JDBC_SLASH_CREDENTIALS, `$1$2/${REDACTED}@`);
   out = out.replace(URL_USERINFO, `$1$2:${REDACTED}@`);
   out = out.replace(URL_LONE_USERINFO, `$1${REDACTED}@`);
+  out = out.replace(BARE_USERINFO, `$1$2:${REDACTED}@`);
   out = out.replace(AUTH_SCHEME, `$1 ${REDACTED}`);
-  out = out.replace(SECRET_PARAM, `$1$2=${REDACTED}`);
+  out = out.replace(SECRET_PARAM, `$1$2$3$2=${REDACTED}`);
   out = out.replace(SECRET_PLACEHOLDER_DEFAULT, `\${$1:${REDACTED}}`);
   for (const shape of TOKEN_SHAPES) out = out.replace(shape, REDACTED);
   return redactOpaqueTokens(out);
