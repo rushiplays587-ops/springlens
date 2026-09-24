@@ -4,7 +4,8 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildRepoModel } from "./build.js";
 import { ClassInfo } from "./model.js";
-import { buildIndex, formatLocalAnswer, queryTerms, rank, stem, tokenize } from "./ask.js";
+import { buildIndex, formatAnswer, formatLocalAnswer, queryTerms, rank, rankAll, stem, tokenize } from "./ask.js";
+import { parseConfigFile } from "./config.js";
 
 const root = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 
@@ -155,7 +156,7 @@ test("formatLocalAnswer says plainly no AI answer was generated and lists file, 
 
 test("formatLocalAnswer with no results says nothing matched instead of listing classes", () => {
   const text = formatLocalAnswer("zebra", [], [cls({ name: "A" })]);
-  assert.ok(text.includes("No classes matched"));
+  assert.ok(text.includes("Nothing matched"));
   assert.ok(!text.includes("No AI answer was generated"));
 });
 
@@ -275,4 +276,88 @@ test("rank: 'what endpoints exist' prefers classes that have endpoints over ones
 test("queryTerms: joins a word with a following particle ('log in' -> login) but not with filler ('the database')", () => {
   assert.ok(queryTerms("how do I log in").some((t) => t.term === "login"));
   assert.ok(!queryTerms("which class talks to the database").some((t) => t.term === "thedatabas"));
+});
+
+// ---- config files in ask ----
+
+const gatewayYaml = [
+  "spring:",
+  "  application:",
+  "    name: api-gateway",
+  "  cloud:",
+  "    gateway:",
+  "      server:",
+  "        webflux:",
+  "          routes:",
+  "            - id: vets-service",
+  "              uri: lb://vets-service",
+  "              predicates:",
+  "                - Path=/api/vet/**",
+  "              filters:",
+  "                - StripPrefix=2",
+].join("\n");
+
+function configWorld() {
+  const classes = [
+    cls({ name: "ApiGatewayApplication", kind: "configuration", annotations: ["SpringBootApplication"] }),
+    cls({ name: "VetResource", kind: "controller", endpoints: [{ httpMethod: "GET", path: "/vets", methodName: "list" }] }),
+    cls({ name: "OwnerService" }),
+  ];
+  const configs = [
+    parseConfigFile("api-gateway/src/main/resources/application.yml", gatewayYaml),
+    parseConfigFile("config-server/src/main/resources/application.yml", "server:\n  port: 8888\nspring:\n  application:\n    name: config-server\n"),
+    parseConfigFile("vets/src/main/resources/application.yml", "spring:\n  application:\n    name: vets-service\n  datasource:\n    url: jdbc:mysql://vets-db.internal:3306/vets\n    password: FAKE-ASK-PASSWORD\n"),
+  ];
+  return { classes, configs, index: buildIndex(classes, configs) };
+}
+
+test("ask: 'how does the api gateway route requests' finds the gateway config file and prints its routes", () => {
+  const { classes, configs, index } = configWorld();
+  const q = "how does the api gateway route requests";
+  const results = rankAll(index, q);
+  const top = results[0];
+  assert.equal(top.type, "config");
+  assert.ok(top.type === "config" && top.config.file.startsWith("api-gateway/"));
+  const text = formatAnswer(q, results, classes, false, configs.length);
+  assert.ok(text.includes("vets-service -> lb://vets-service [Path=/api/vet/**, filter StripPrefix=2]"));
+});
+
+test("ask: 'which port does the config server run on' returns the config-server file and its port", () => {
+  const { classes, configs, index } = configWorld();
+  const q = "which port does the config server run on";
+  const results = rankAll(index, q);
+  assert.equal(results[0].type, "config");
+  assert.ok(results[0].type === "config" && results[0].config.file.startsWith("config-server/"));
+  assert.ok(formatAnswer(q, results, classes, false, configs.length).includes("Port: 8888"));
+});
+
+test("ask: a database question surfaces the config with the datasource host, and never the password", () => {
+  const { classes, configs, index } = configWorld();
+  const q = "which database does the vets service use";
+  const text = formatAnswer(q, rankAll(index, q), classes, false, configs.length);
+  assert.ok(text.includes("mysql at vets-db.internal:3306"));
+  assert.ok(!text.includes("FAKE-ASK-PASSWORD"));
+});
+
+test("ask: rank() still returns classes only, so existing class-only callers are unaffected", () => {
+  const { index } = configWorld();
+  assert.ok(rank(index, "which port does the config server run on").every((r) => "cls" in r && r.cls.name.length > 0));
+});
+
+test("ask: a question with no config or class match says nothing matched, and formatAnswer counts config files searched", () => {
+  const { classes, configs, index } = configWorld();
+  const text = formatAnswer("zebra quantum", rankAll(index, "zebra quantum"), classes, false, configs.length);
+  assert.ok(text.includes("Nothing matched (searched 3 classes and 3 config files)"));
+});
+
+test("ask: config classes bound by prefix or @Value show what they read in the local answer", () => {
+  const c = cls({
+    name: "ShopProperties",
+    kind: "configuration",
+    configPrefix: "shop",
+    configKeys: [{ key: "shop.currency", hasDefault: true }],
+  });
+  const text = formatAnswer("shop properties", rankAll(buildIndex([c], []), "shop properties"), [c]);
+  assert.ok(text.includes("Binds config prefix: shop"));
+  assert.ok(text.includes("Reads config: shop.currency"));
 });

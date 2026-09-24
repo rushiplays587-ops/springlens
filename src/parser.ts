@@ -1,4 +1,5 @@
 import { ClassInfo, ClassKind, Endpoint } from "./model.js";
+import { extractConfigPrefix } from "./config.js";
 
 /**
  * v1 extraction strategy: annotation-driven heuristics, not a full Java AST parse.
@@ -17,8 +18,9 @@ import { ClassInfo, ClassKind, Endpoint } from "./model.js";
  *    string can never be mistaken for code; values are then read from the
  *    stripped text at the same indexes.
  *
- * Known v1 limitations (documented, not oversights): records and Kotlin/Groovy
- * sources are not parsed; nested annotated classes are reported as their own
+ * Known v1 limitations (documented, not oversights): Kotlin/Groovy sources are
+ * not parsed, and a record is only picked up when it carries a Spring role
+ * annotation (its components are not followed as dependencies); nested annotated classes are reported as their own
  * entries (their text also remains inside the enclosing class body); classes
  * sharing a simple name across packages are merged by name; @Bean-method
  * parameter injection is not followed. Upgrading to a real AST parser (e.g.
@@ -40,6 +42,7 @@ const KIND_BY_ANNOTATION: Record<string, ClassKind> = {
   SpringBootApplication: "configuration",
   Component: "component",
   Aspect: "component",
+  ConfigurationProperties: "configuration",
 };
 
 const SPRING_DATA_REPOSITORY_TYPES = new Set([
@@ -675,13 +678,17 @@ export function parseJavaFile(source: string, filePath: string): ClassInfo[] {
   const masked = maskStrings(stripped);
   const results: ClassInfo[] = [];
 
-  const declRegex = /\b(class|interface|enum)\s+(\w+)/g;
+  const declRegex = /\b(class|interface|enum|record)\s+(\w+)/g;
   let match: RegExpExecArray | null;
 
   while ((match = declRegex.exec(masked)) !== null) {
     const keyword = match[1];
     const className = match[2];
     const declKeywordIndex = match.index;
+    // "record" is only a declaration when a component list follows (`record Name(...)`, optionally generic).
+    if (keyword === "record" && !/^\s*(?:<[^>{}]*>)?\s*\(/.test(masked.slice(match.index + match[0].length, match.index + match[0].length + 200))) {
+      continue;
+    }
 
     const braceIndex = masked.indexOf("{", declKeywordIndex);
     if (braceIndex === -1) continue;
@@ -706,7 +713,11 @@ export function parseJavaFile(source: string, filePath: string): ClassInfo[] {
       classPrefix = { prefix: parsed.paths[0] ?? "", unresolved: parsed.unresolved };
     }
 
+    const configProps = annotations.find((a) => shortName(a.name) === "ConfigurationProperties");
+    const configPrefix = configProps ? extractConfigPrefix(configProps.args) : undefined;
+
     results.push({
+      ...(configPrefix !== undefined ? { configPrefix } : {}),
       name: className,
       kind,
       file: filePath,

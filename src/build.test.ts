@@ -335,3 +335,72 @@ test("a dependency with <exclusions> before its <groupId> is not mistaken for th
   assert.deepEqual(deps.map((d) => `${d.artifactId}:${d.version}`), ["foo:1.0"]);
   assert.equal(assessDependencies(deps).length, 0);
 });
+
+test("configs: application/bootstrap files are found in every module, src/test and build output are skipped, names are repo-relative", () => {
+  withRepo((root, write) => {
+    write("pom.xml", "<project/>");
+    write("a/src/main/resources/application.yml", "spring:\n  application:\n    name: a\nserver:\n  port: 1\n");
+    write("b/src/main/resources/application-dev.properties", "server.port=2\n");
+    write("b/src/main/resources/bootstrap.yaml", "spring:\n  cloud:\n    config:\n      uri: http://cfg\n");
+    write("a/src/test/resources/application-test.yml", "server:\n  port: 3\n");
+    write("a/target/classes/application.yml", "server:\n  port: 4\n");
+    write("a/src/main/resources/application.yml.bak", "server:\n  port: 5\n");
+    const files = buildRepoModel(root).configs.map((c) => c.file).sort();
+    assert.deepEqual(files, [
+      "a/src/main/resources/application.yml",
+      "b/src/main/resources/application-dev.properties",
+      "b/src/main/resources/bootstrap.yaml",
+    ]);
+  });
+});
+
+test("configs: an unparsable file is listed with an error and the rest of the scan continues", () => {
+  withRepo((root, write) => {
+    write("src/main/resources/application.yml", "a: [1, 2\n");
+    write("src/main/resources/application-good.yml", "server:\n  port: 9\n");
+    write("src/main/java/com/x/S.java", "package com.x;\n@org.springframework.stereotype.Service\npublic class S {}\n");
+    const model = buildRepoModel(root);
+    const bad = model.configs.find((c) => c.file.endsWith("application.yml"));
+    assert.ok(bad?.error);
+    assert.equal(model.configs.find((c) => c.file.endsWith("application-good.yml"))?.documents[0].summary.port, "9");
+    assert.equal(model.classes.length, 1);
+  });
+});
+
+test("configs: an oversized file is skipped without being parsed, and a directory named application.yml does not crash", () => {
+  withRepo((root, write) => {
+    write("src/main/resources/application.yml", "a: " + "x".repeat(300 * 1024));
+    write("src/main/resources/application.properties/keep.txt", "not a file");
+    const model = buildRepoModel(root);
+    assert.equal(model.configs.length, 1);
+    assert.match(model.configs[0].error ?? "", /larger than/);
+  });
+});
+
+test("configs: secrets in config files never appear anywhere in the model", () => {
+  const model = buildRepoModel(resolve(fixturePath, "..", "test-fixture-large"));
+  const dump = JSON.stringify(model);
+  for (const fake of [
+    "FAKE-DB-PASSWORD-hunter2",
+    "FAKE-QUERY-PASSWORD-1",
+    "FAKE-CFG-PASSWORD",
+    "FAKE-JWT-SECRET-abc123",
+    "FAKE-WEBHOOK-TOKEN-1",
+    "AKIAABCDEFGHIJKLMNOP",
+    "FAKE-H2-PASSWORD",
+    "FAKE-BOOTSTRAP-PASSWORD",
+  ]) {
+    assert.ok(!dump.includes(fake), `${fake} is in the repo model`);
+  }
+  assert.ok(model.configs.length >= 3);
+});
+
+test("bindings: @Value keys and @ConfigurationProperties prefixes of the larger fixture are attached to their classes", () => {
+  const model = buildRepoModel(resolve(fixturePath, "..", "test-fixture-large"));
+  const notify = model.classes.find((c) => c.name === "NotificationService");
+  assert.deepEqual(
+    notify?.configKeys?.map((k) => [k.key, k.hasDefault]),
+    [["notify.webhook", false], ["notify.timeout-seconds", true], ["notify.retries", true], ["missing.setting", false]]
+  );
+  assert.equal(model.classes.find((c) => c.name === "ShopProperties")?.configPrefix, "shop");
+});

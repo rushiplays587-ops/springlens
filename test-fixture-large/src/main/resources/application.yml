@@ -1,0 +1,41 @@
+spring:
+  application:
+    name: shop-api
+  profiles:
+    active: dev
+  datasource:
+    url: jdbc:mysql://shop-db.internal:3306/shop?useSSL=false&password=FAKE-QUERY-PASSWORD-1
+    username: shop_app
+    password: FAKE-DB-PASSWORD-hunter2
+  config:
+    import: optional:configserver:https://cfg-user:FAKE-CFG-PASSWORD@config.internal:8888
+server:
+  port: 8090
+  servlet:
+    context-path: /shop
+eureka:
+  client:
+    service-url:
+      defaultZone: http://eureka.internal:8761/eureka/
+jwt:
+  secret: FAKE-JWT-SECRET-abc123
+  issuer: shop-api
+shop:
+  currency: EUR
+  free-shipping-threshold: 50
+notify:
+  webhook: https://hooks.example.com/services/T000/B000/XXXX?token=FAKE-WEBHOOK-TOKEN-1
+  timeout-seconds: 30
+cloud:
+  aws-access-id: AKIAABCDEFGHIJKLMNOP
+  region: eu-west-1
+---
+spring:
+  config:
+    activate:
+      on-profile: prod
+  datasource:
+    url: jdbc:postgresql://prod-db.internal:5432/shop
+    password: ${DB_PASSWORD}
+server:
+  port: 8443

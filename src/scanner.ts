@@ -14,6 +14,11 @@ const BUILD_OUTPUT_DIRS = new Set(["target", "build", "out", "bin"]);
  * followed (avoids loops and escaping the scanned tree).
  */
 export function findJavaFiles(rootPath: string): string[] {
+  return findFiles(rootPath, (name) => name.endsWith(".java"));
+}
+
+/** Same walk and exclusions as findJavaFiles, for any file name the predicate accepts (e.g. application.yml). */
+export function findFiles(rootPath: string, accept: (fileName: string) => boolean): string[] {
   const results: string[] = [];
 
   function walk(dir: string, srcDepth: number): void {
@@ -43,7 +48,7 @@ export function findJavaFiles(rootPath: string): string[] {
         if (entry === "test" && dir !== rootPath && basename(dir) === "src" && srcDepth === 1) continue;
         if (srcDepth === 0 && BUILD_OUTPUT_DIRS.has(entry)) continue;
         walk(fullPath, srcDepth + (entry === "src" ? 1 : 0));
-      } else if (stat.isFile() && entry.endsWith(".java")) {
+      } else if (stat.isFile() && accept(entry)) {
         results.push(fullPath);
       }
     }

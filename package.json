@@ -15,13 +15,14 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/cli.js",
-    "test": "tsc && node --test dist/build.test.js dist/parser.test.js dist/narrate.test.js dist/depscan.test.js dist/scanner.test.js dist/ask.test.js dist/ask-ai.test.js dist/cli.test.js"
+    "test": "tsc && node --test dist/build.test.js dist/parser.test.js dist/narrate.test.js dist/depscan.test.js dist/scanner.test.js dist/ask.test.js dist/ask-ai.test.js dist/cli.test.js dist/redact.test.js dist/config.test.js dist/report.test.js"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.27.0"
+    "@anthropic-ai/sdk": "^0.27.0",
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

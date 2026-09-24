@@ -1,4 +1,4 @@
-import { ClassInfo } from "./model.js";
+import { ClassInfo, ConfigFile } from "./model.js";
 
 /**
  * Local retrieval for "ask the codebase". Everything here is pure: no network,
@@ -157,14 +157,15 @@ export function queryTerms(question: string): QueryTerm[] {
   return [...terms.values()];
 }
 
-interface IndexedClass {
-  cls: ClassInfo;
+interface IndexedDoc {
+  cls: ClassInfo | null; // exactly one of cls / config is set
+  config: ConfigFile | null;
   tf: Map<string, number>; // field-weighted term frequency
   length: number; // sum of the weighted term frequencies
 }
 
 export interface SearchIndex {
-  docs: IndexedClass[];
+  docs: IndexedDoc[];
   df: Map<string, number>;
   avgLength: number;
 }
@@ -175,8 +176,39 @@ function addField(tf: Map<string, number>, text: string, weight: number, cap = I
   for (const [token, count] of counts) tf.set(token, (tf.get(token) ?? 0) + weight * Math.min(count, cap));
 }
 
-export function buildIndex(classes: ClassInfo[]): SearchIndex {
-  const docs: IndexedClass[] = classes.map((cls) => {
+/** Config files are searched by their application name, summary words (port, routes, datasource...), keys and values. */
+function indexConfig(cfg: ConfigFile): Map<string, number> {
+  const tf = new Map<string, number>();
+  const appNames = cfg.documents.map((d) => d.summary.applicationName ?? "").join(" ");
+  addField(tf, appNames, FIELD_WEIGHTS.name);
+  addField(tf, cfg.file, FIELD_WEIGHTS.file);
+  addField(tf, "config configuration properties settings", FIELD_WEIGHTS.dependsOn);
+
+  const summaryWords: string[] = [];
+  for (const doc of cfg.documents) {
+    const sum = doc.summary;
+    if (sum.port) summaryWords.push("server port listens", sum.port);
+    if (sum.contextPath) summaryWords.push("context path");
+    if (sum.profiles.length > 0) summaryWords.push("profile profiles active");
+    for (const b of sum.backends) summaryWords.push("database datasource", b.kind, b.target);
+    if (sum.discovery) summaryWords.push("eureka discovery registry");
+    if (sum.configImports.length > 0 || sum.configServer.length > 0) summaryWords.push("config server import");
+    if (sum.routes.length > 0 || sum.defaultFilters.length > 0) summaryWords.push("gateway route routes routing routed");
+    for (const r of sum.routes) summaryWords.push(r.id, r.uri, ...r.predicates, ...r.filters);
+  }
+  addField(tf, summaryWords.join(" "), FIELD_WEIGHTS.endpoint);
+
+  for (const doc of cfg.documents) {
+    for (const p of doc.properties) {
+      addField(tf, p.key, FIELD_WEIGHTS.annotation);
+      addField(tf, p.value, FIELD_WEIGHTS.body, BODY_TF_CAP);
+    }
+  }
+  return tf;
+}
+
+export function buildIndex(classes: ClassInfo[], configs: ConfigFile[] = []): SearchIndex {
+  const docs: IndexedDoc[] = classes.map((cls) => {
     const tf = new Map<string, number>();
     addField(tf, cls.name, FIELD_WEIGHTS.name);
     addField(tf, cls.kind, FIELD_WEIGHTS.kind);
@@ -190,8 +222,16 @@ export function buildIndex(classes: ClassInfo[]): SearchIndex {
     if (cls.endpoints.length > 0) addField(tf, "endpoint", FIELD_WEIGHTS.endpoint);
     let length = 0;
     for (const v of tf.values()) length += v;
-    return { cls, tf, length };
+    return { cls, config: null, tf, length };
   });
+
+  for (const config of configs) {
+    if (config.documents.length === 0) continue;
+    const tf = indexConfig(config);
+    let length = 0;
+    for (const v of tf.values()) length += v;
+    docs.push({ cls: null, config, tf, length });
+  }
 
   const df = new Map<string, number>();
   for (const doc of docs) {
@@ -207,8 +247,57 @@ export interface RankedClass {
   matched: string[]; // words from the question (or related words) that hit this class
 }
 
+export type RankedItem =
+  | { type: "class"; cls: ClassInfo; score: number; matched: string[] }
+  | { type: "config"; config: ConfigFile; score: number; matched: string[] };
+
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+interface Scored {
+  doc: IndexedDoc;
+  score: number;
+  matched: string[];
+  exact: boolean;
+}
+
+function scoreDocs(index: SearchIndex, question: string, only: "class" | "all"): Scored[] {
+  const terms = queryTerms(question);
+  const n = index.docs.length;
+  if (n === 0) return [];
+
+  const named = (name: string) =>
+    new RegExp(`(?<![A-Za-z0-9_$])${escapeRegExp(name)}(?![A-Za-z0-9_$])`).test(question);
+
+  const scored: Scored[] = [];
+  for (const doc of index.docs) {
+    if (only === "class" && !doc.cls) continue;
+    let score = 0;
+    const matched: string[] = [];
+    for (const { term, weight, display } of terms) {
+      const tf = doc.tf.get(term);
+      if (!tf) continue;
+      const df = index.df.get(term) ?? 0;
+      const idf = Math.log(1 + (n - df + 0.5) / (df + 0.5));
+      const norm = index.avgLength === 0 ? 1 : 1 - B + (B * doc.length) / index.avgLength;
+      score += weight * idf * ((tf * (K1 + 1)) / (tf + K1 * norm));
+      if (!matched.includes(display)) matched.push(display);
+    }
+    const exact = doc.cls ? named(doc.cls.name) : false;
+    if (score > 0 || exact) scored.push({ doc, score, matched, exact });
+  }
+
+  const label = (d: IndexedDoc) => (d.cls ? d.cls.name : "");
+  const path = (d: IndexedDoc) => (d.cls ? d.cls.file : d.config!.file);
+  scored.sort(
+    (a, b) =>
+      Number(b.exact) - Number(a.exact) ||
+      b.score - a.score ||
+      label(a.doc).localeCompare(label(b.doc)) ||
+      path(a.doc).localeCompare(path(b.doc))
+  );
+  return scored;
 }
 
 /**
@@ -222,38 +311,26 @@ export function rank(
   question: string,
   limit = DEFAULT_RESULT_COUNT
 ): RankedClass[] {
-  const terms = queryTerms(question);
-  const n = index.docs.length;
-  if (n === 0 || limit <= 0) return [];
+  if (limit <= 0) return [];
+  return scoreDocs(index, question, "class")
+    .slice(0, limit)
+    .map(({ doc, score, matched }) => ({ cls: doc.cls!, score, matched }));
+}
 
-  const named = (name: string) =>
-    new RegExp(`(?<![A-Za-z0-9_$])${escapeRegExp(name)}(?![A-Za-z0-9_$])`).test(question);
-
-  const ranked: (RankedClass & { exact: boolean })[] = [];
-  for (const doc of index.docs) {
-    let score = 0;
-    const matched: string[] = [];
-    for (const { term, weight, display } of terms) {
-      const tf = doc.tf.get(term);
-      if (!tf) continue;
-      const df = index.df.get(term) ?? 0;
-      const idf = Math.log(1 + (n - df + 0.5) / (df + 0.5));
-      const norm = index.avgLength === 0 ? 1 : 1 - B + (B * doc.length) / index.avgLength;
-      score += weight * idf * ((tf * (K1 + 1)) / (tf + K1 * norm));
-      if (!matched.includes(display)) matched.push(display);
-    }
-    const exact = named(doc.cls.name);
-    if (score > 0 || exact) ranked.push({ cls: doc.cls, score, matched, exact });
-  }
-
-  ranked.sort(
-    (a, b) =>
-      Number(b.exact) - Number(a.exact) ||
-      b.score - a.score ||
-      a.cls.name.localeCompare(b.cls.name) ||
-      a.cls.file.localeCompare(b.cls.file)
-  );
-  return ranked.slice(0, limit).map(({ cls, score, matched }) => ({ cls, score, matched }));
+/** Like rank(), but classes and config files compete in one list. */
+export function rankAll(
+  index: SearchIndex,
+  question: string,
+  limit = DEFAULT_RESULT_COUNT
+): RankedItem[] {
+  if (limit <= 0) return [];
+  return scoreDocs(index, question, "all")
+    .slice(0, limit)
+    .map(({ doc, score, matched }): RankedItem =>
+      doc.cls
+        ? { type: "class", cls: doc.cls, score, matched }
+        : { type: "config", config: doc.config!, score, matched }
+    );
 }
 
 const MAX_LISTED = 8;
@@ -263,33 +340,88 @@ function listCapped(items: string[]): string {
   return `${items.slice(0, MAX_LISTED).join(", ")} (+${items.length - MAX_LISTED} more)`;
 }
 
-/** Plain-text answer for the default, fully local mode. Says plainly that no AI answer was generated. */
-export function formatLocalAnswer(
+const MAX_SETTING_LINES = 6;
+
+/** Lines about one config file for the local answer. Values were redacted when the file was parsed. */
+function configLines(question: string, config: ConfigFile): string[] {
+  const lines: string[] = [];
+  const terms = new Set(queryTerms(question).map((t) => t.term));
+  const summaries = config.documents.map((d) => d.summary);
+  const first = summaries.find((s) => s.applicationName);
+  if (first?.applicationName) lines.push(`   Application: ${first.applicationName}`);
+
+  config.documents.forEach((doc, i) => {
+    const sum = doc.summary;
+    const where = doc.onProfile ? ` [profile ${doc.onProfile}]` : config.documents.length > 1 ? ` [document ${i + 1}]` : "";
+    if (sum.port) lines.push(`   Port${where}: ${sum.port}`);
+    if (sum.contextPath) lines.push(`   Context path${where}: ${sum.contextPath}`);
+    for (const b of sum.backends) lines.push(`   Data source${where}: ${b.kind} at ${b.target}`);
+    if (sum.discovery) lines.push(`   Eureka${where}: ${sum.discovery}`);
+    for (const c of sum.configImports) lines.push(`   Config import${where}: ${c}`);
+    if (sum.routes.length > 0) {
+      lines.push(`   Gateway routes${where}:`);
+      for (const r of sum.routes.slice(0, 12)) {
+        const bits = [...r.predicates, ...r.filters.map((f) => `filter ${f}`)].join(", ");
+        lines.push(`     ${r.id || "(no id)"} -> ${r.uri || "(no uri)"}${bits ? ` [${bits}]` : ""}`);
+      }
+      if (sum.routes.length > 12) lines.push(`     (+${sum.routes.length - 12} more routes)`);
+    }
+    if (sum.defaultFilters.length > 0) lines.push(`   Default filters${where}: ${sum.defaultFilters.join(", ")}`);
+  });
+
+  const settings: string[] = [];
+  for (const doc of config.documents) {
+    for (const p of doc.properties) {
+      if (settings.length >= MAX_SETTING_LINES) break;
+      if (tokenize(p.key).some((t) => terms.has(t))) settings.push(`   ${p.key} = ${p.value === "" ? '""' : p.value}`);
+    }
+  }
+  if (settings.length > 0) {
+    lines.push("   Matching settings:");
+    lines.push(...settings.map((l) => "  " + l));
+  }
+  return lines;
+}
+
+/**
+ * Plain-text answer for the default, fully local mode: the best-matching
+ * classes and config files. Says plainly that no AI answer was generated.
+ */
+export function formatAnswer(
   question: string,
-  results: RankedClass[],
+  results: RankedItem[],
   allClasses: ClassInfo[],
-  aiRequested = false
+  aiRequested = false,
+  configCount = 0
 ): string {
   const lines: string[] = [];
   lines.push(`Question: ${question}`);
   lines.push("");
 
+  const searched =
+    configCount > 0 ? `${allClasses.length} classes and ${configCount} config files` : `${allClasses.length}`;
   if (results.length === 0) {
     lines.push(
-      `No classes matched (searched ${allClasses.length}). Try words that appear in the code: ` +
-        "class names, method names, endpoint paths."
+      `Nothing matched (searched ${searched}). Try words that appear in the code: ` +
+        "class names, method names, endpoint paths, config keys."
     );
   } else {
     lines.push(
-      `Most relevant classes by keyword search (${results.length} of ${allClasses.length}). ` +
+      `Most relevant results by keyword search (${results.length}; searched ${searched}). ` +
         "No AI answer was generated."
     );
     results.forEach((r, i) => {
+      lines.push("");
+      if (r.type === "config") {
+        lines.push(`${i + 1}. ${r.config.file} (config file)`);
+        lines.push(...configLines(question, r.config));
+        if (r.matched.length > 0) lines.push(`   Matched: ${r.matched.join(", ")}`);
+        return;
+      }
       const { cls } = r;
       const usedBy = allClasses
         .filter((c) => c.name !== cls.name && c.dependsOn.includes(cls.name))
         .map((c) => c.name);
-      lines.push("");
       lines.push(`${i + 1}. ${cls.name} (${cls.kind}) — ${cls.file}`);
       if (cls.endpoints.length > 0) {
         lines.push(
@@ -301,6 +433,8 @@ export function formatLocalAnswer(
       }
       lines.push(`   Depends on: ${cls.dependsOn.length ? listCapped(cls.dependsOn) : "(nothing else in this repo)"}`);
       lines.push(`   Used by: ${usedBy.length ? listCapped(usedBy) : "(no other class in this repo)"}`);
+      if (cls.configPrefix !== undefined) lines.push(`   Binds config prefix: ${cls.configPrefix}`);
+      if ((cls.configKeys?.length ?? 0) > 0) lines.push(`   Reads config: ${listCapped(cls.configKeys!.map((k) => k.key))}`);
       if (r.matched.length > 0) lines.push(`   Matched: ${r.matched.join(", ")}`);
     });
   }
@@ -308,10 +442,25 @@ export function formatLocalAnswer(
   lines.push("");
   lines.push(
     "This is keyword ranking, not understanding: it can miss a class that uses different words " +
-      "than your question." +
+      "than your question. Config values under secret-looking keys are redacted." +
       (aiRequested
         ? ""
-        : " Pass --ai for a written answer (sends the top classes' source to Anthropic).")
+        : " Pass --ai for a written answer (sends the top classes' source and config lines to Anthropic).")
   );
   return lines.join("\n");
+}
+
+/** Class-only convenience wrapper around formatAnswer. */
+export function formatLocalAnswer(
+  question: string,
+  results: RankedClass[],
+  allClasses: ClassInfo[],
+  aiRequested = false
+): string {
+  return formatAnswer(
+    question,
+    results.map((r): RankedItem => ({ type: "class", ...r })),
+    allClasses,
+    aiRequested
+  );
 }

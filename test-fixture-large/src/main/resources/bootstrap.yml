@@ -1,0 +1,6 @@
+spring:
+  cloud:
+    config:
+      uri: http://config.internal:8888
+      username: boot
+      password: FAKE-BOOTSTRAP-PASSWORD

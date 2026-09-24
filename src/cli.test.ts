@@ -84,3 +84,85 @@ test("ask accepts a question after a bare -- even when it starts with a dash and
 test("ask still rejects a real unknown flag before --", () => {
   assert.equal(run(["ask", fixture, "--bogus", "--", "login"]).code, 2);
 });
+
+// ---- HTML output and config end to end ----
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const FAKES = [
+  "FAKE-DB-PASSWORD-hunter2",
+  "FAKE-QUERY-PASSWORD-1",
+  "FAKE-CFG-PASSWORD",
+  "FAKE-JWT-SECRET-abc123",
+  "FAKE-WEBHOOK-TOKEN-1",
+  "AKIAABCDEFGHIJKLMNOP",
+  "FAKE-H2-PASSWORD",
+  "FAKE-BOOTSTRAP-PASSWORD",
+];
+
+function withFixtureCopy(fn: (dir: string) => void): void {
+  const dir = mkdtempSync(join(tmpdir(), "springlens-cli-"));
+  try {
+    cpSync(fixture, dir, { recursive: true });
+    fn(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("--html writes a self-contained springlens-report.html next to the markdown report, with no fake secret in either", () => {
+  withFixtureCopy((dir) => {
+    const r = run([dir, "--html"]);
+    assert.equal(r.code, 0, r.err);
+    assert.ok(existsSync(join(dir, "springlens-report.md")));
+    const html = readFileSync(join(dir, "springlens-report.html"), "utf-8");
+    const md = readFileSync(join(dir, "springlens-report.md"), "utf-8");
+    assert.ok(html.startsWith("<!doctype html>"));
+    assert.ok(!/<script/i.test(html));
+    assert.ok(html.includes("Gateway routing") || html.includes("Configuration files"));
+    for (const fake of FAKES) {
+      assert.ok(!html.includes(fake), `${fake} in html`);
+      assert.ok(!md.includes(fake), `${fake} in markdown`);
+      assert.ok(!r.out.includes(fake), `${fake} on stdout`);
+    }
+    assert.ok(html.includes("[redacted]"));
+  });
+});
+
+test("without --html no HTML file is written", () => {
+  withFixtureCopy((dir) => {
+    assert.equal(run([dir]).code, 0);
+    assert.ok(!existsSync(join(dir, "springlens-report.html")));
+  });
+});
+
+test("ask output never contains a config secret, even for questions aimed straight at one", () => {
+  for (const q of ["what is the datasource password", "which jwt secret is used", "webhook token", "aws access id", "config server password"]) {
+    const r = run(["ask", fixture, q]);
+    assert.equal(r.code, 0, r.err);
+    for (const fake of FAKES) assert.ok(!r.out.includes(fake), `${fake} in ask output for "${q}"`);
+  }
+});
+
+test("ask can answer a port question from config files", () => {
+  const r = run(["ask", fixture, "which port does the shop api run on"]);
+  assert.equal(r.code, 0, r.err);
+  assert.ok(r.out.includes("(config file)"));
+  assert.ok(r.out.includes("8090"));
+});
+
+test("an unparsable config file does not stop the report", () => {
+  withFixtureCopy((dir) => {
+    writeFileSync(join(dir, "src", "main", "resources", "application-broken.yml"), "a: [1, 2\n");
+    const r = run([dir]);
+    assert.equal(r.code, 0, r.err);
+    const md = readFileSync(join(dir, "springlens-report.md"), "utf-8");
+    assert.ok(md.includes("application-broken.yml"));
+    assert.ok(md.includes("Could not be fully read"));
+  });
+});
+
+test("--help documents --html", () => {
+  assert.ok(run(["--help"]).out.includes("--html"));
+});

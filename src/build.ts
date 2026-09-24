@@ -1,8 +1,9 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { findJavaFiles } from "./scanner.js";
+import { findFiles, findJavaFiles } from "./scanner.js";
+import { MAX_CONFIG_FILE_BYTES, bindClassConfig, isConfigFileName, parseConfigFile } from "./config.js";
 import { parseJavaFile } from "./parser.js";
-import { ClassInfo, Dependency, RepoModel } from "./model.js";
+import { ClassInfo, ConfigFile, Dependency, RepoModel } from "./model.js";
 import {
   assessDependencies,
   parseGradleDependencies,
@@ -164,6 +165,21 @@ function loadDependencies(rootPath: string): { dependencies: Dependency[]; build
   return { dependencies, buildFiles };
 }
 
+/** Reads the application and bootstrap config files; one that cannot be read or parsed becomes an entry with `error` set. */
+function loadConfigs(rootPath: string): ConfigFile[] {
+  return findFiles(rootPath, isConfigFileName).map((file) => {
+    const rel = relative(rootPath, file).split(sep).join("/");
+    try {
+      if (statSync(file).size > MAX_CONFIG_FILE_BYTES) {
+        return parseConfigFile(rel, "x".repeat(MAX_CONFIG_FILE_BYTES + 1)); // reuses the size-cap message without reading the file
+      }
+      return parseConfigFile(rel, readFileSync(file, "utf-8"));
+    } catch (err) {
+      return { ...parseConfigFile(rel, ""), error: `unreadable (${(err as Error).message.split("\n")[0]})` };
+    }
+  });
+}
+
 /**
  * Scans every .java file under rootPath and builds the full repo model:
  * every Spring-annotated class found, with its dependencies filtered down
@@ -196,5 +212,8 @@ export function buildRepoModel(rootPath: string): RepoModel {
   const { dependencies, buildFiles } = loadDependencies(rootPath);
   const riskFindings = assessDependencies(dependencies);
 
-  return { rootPath, classes: allClasses, dependencies, buildFiles, riskFindings };
+  bindClassConfig(allClasses);
+  const configs = loadConfigs(rootPath);
+
+  return { rootPath, classes: allClasses, dependencies, buildFiles, riskFindings, configs };
 }

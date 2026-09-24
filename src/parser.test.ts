@@ -164,3 +164,48 @@ test("many annotated endpoints parse in linear-ish time", () => {
   assert.equal(c.endpoints.length, 3000);
   assert.ok(Date.now() - start < 5000, "parsing 3000 endpoints took too long");
 });
+
+test("a @ConfigurationProperties class is reported as configuration with its prefix", () => {
+  const src = `
+    @Component
+    @ConfigurationProperties(prefix = "shop.pay")
+    public class PayProps { private String a; }
+
+    @ConfigurationProperties("plain")
+    class Plain { }
+
+    @ConfigurationProperties(prefix = SOME_CONSTANT)
+    class ConstPrefix { }
+  `;
+  const byName = new Map(parseJavaFile(src, "X.java").map((c) => [c.name, c]));
+  assert.equal(byName.get("PayProps")?.configPrefix, "shop.pay");
+  assert.equal(byName.get("Plain")?.kind, "configuration");
+  assert.equal(byName.get("Plain")?.configPrefix, "plain");
+  assert.equal(byName.get("ConstPrefix")?.configPrefix, undefined);
+});
+
+test("a record with a Spring role annotation is reported; a plain DTO record is not", () => {
+  const src = `
+    @ConfigurationProperties(prefix = "vets")
+    public record VetsProperties(String cacheTtl, int cacheHeapSize) {}
+
+    public record OwnerDto(String name) {}
+
+    @Component
+    record Helper<T>(T value) {}
+  `;
+  const found = parseJavaFile(src, "R.java");
+  assert.deepEqual(found.map((c) => c.name).sort(), ["Helper", "VetsProperties"]);
+  assert.equal(found.find((c) => c.name === "VetsProperties")?.configPrefix, "vets");
+});
+
+test("the word record used as an ordinary identifier is not mistaken for a record declaration", () => {
+  const src = `
+    @Service
+    class S {
+      void f(Visit record) { for (Visit record2 : list) { record.touch(); } String record = "x"; }
+      void g() { Object o = record; }
+    }
+  `;
+  assert.deepEqual(parseJavaFile(src, "S.java").map((c) => c.name), ["S"]);
+});

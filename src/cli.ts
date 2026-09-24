@@ -2,26 +2,32 @@
 import { existsSync, lstatSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { buildRepoModel } from "./build.js";
-import { renderMarkdownReport } from "./report.js";
+import { renderHtmlReport, renderMarkdownReport } from "./report.js";
 import Anthropic from "@anthropic-ai/sdk";
-import { MAX_BODY_CHARS, NARRATION_MODEL, answerQuestion, narrateAll } from "./narrate.js";
+import {
+  MAX_BODY_CHARS,
+  MAX_CONFIG_PROMPT_LINES,
+  NARRATION_MODEL,
+  answerQuestion,
+  narrateAll,
+} from "./narrate.js";
 import {
   DEFAULT_RESULT_COUNT,
   MAX_QUESTION_CHARS,
   buildIndex,
-  formatLocalAnswer,
-  rank,
+  formatAnswer,
+  rankAll,
 } from "./ask.js";
 
 const VERSION = "0.1.0";
-const KNOWN_FLAGS = new Set(["--ai", "--no-ai", "--help", "-h"]);
+const KNOWN_FLAGS = new Set(["--ai", "--no-ai", "--html", "--help", "-h"]);
 
 function printUsage(): void {
   console.log(`SpringLens v${VERSION}
 Onboarding and dependency-risk analysis for Java/Spring Boot codebases.
 
 Usage:
-  springlens <path-to-repo> [--ai]
+  springlens <path-to-repo> [--ai] [--html]
   springlens ask <path-to-repo> "<question>" [--ai]
   springlens ask <path-to-repo> [--ai] -- "-Xmx flag"   (a question starting with "-")
 
@@ -34,6 +40,9 @@ Examples:
 By default SpringLens runs entirely locally and writes a structural report
 (springlens-report.md inside the repo). Nothing leaves your machine.
 
+--html also write springlens-report.html: the same report as one self-contained page
+       (inline styles, no scripts, no external requests). Nothing extra is sent anywhere.
+
 --ai   also generate a plain-English explanation per class using the Anthropic
        API. This SENDS class source code (up to ${MAX_BODY_CHARS} characters per class,
        including string literals such as URLs and config values) to Anthropic.
@@ -45,6 +54,14 @@ ask    answers a question about the repo. By default it is local: it ranks the
        of only the top ${DEFAULT_RESULT_COUNT} matching classes (up to ${MAX_BODY_CHARS} characters each,
        string literals included) to the Anthropic API for a written answer.
 `);
+}
+
+function isSymbolicLink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false; // does not exist
+  }
 }
 
 /** Resolves and validates the repo directory; prints the error and sets the exit code on failure. */
@@ -80,8 +97,8 @@ async function runAsk(positional: string[], wantsAi: boolean): Promise<void> {
   if (!repoPath) return;
 
   const model = buildRepoModel(repoPath);
-  const results = rank(buildIndex(model.classes), question, DEFAULT_RESULT_COUNT);
-  console.log(formatLocalAnswer(question, results, model.classes, wantsAi));
+  const results = rankAll(buildIndex(model.classes, model.configs), question, DEFAULT_RESULT_COUNT);
+  console.log(formatAnswer(question, results, model.classes, wantsAi, model.configs.length));
 
   if (!wantsAi) return;
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -93,17 +110,23 @@ async function runAsk(positional: string[], wantsAi: boolean): Promise<void> {
     console.log("\n--ai: nothing retrieved, so nothing was sent to the Anthropic API.");
     return;
   }
-  console.log(
-    `\n--ai: sending your question and the source of ${results.length} classes ` +
-      `(${results.map((r) => r.cls.name).join(", ")}; up to ${MAX_BODY_CHARS} characters each, ` +
-      `string literals included) to the Anthropic API using model ${NARRATION_MODEL}.`
-  );
-  const answer = await answerQuestion(
-    new Anthropic({ apiKey }),
-    question,
-    results.map((r) => r.cls),
-    model.classes.length
-  );
+  const classes = results.flatMap((r) => (r.type === "class" ? [r.cls] : []));
+  const configs = results.flatMap((r) => (r.type === "config" ? [r.config] : []));
+  const sent: string[] = [];
+  if (classes.length > 0) {
+    sent.push(
+      `the source of ${classes.length} classes (${classes.map((c) => c.name).join(", ")}; up to ` +
+        `${MAX_BODY_CHARS} characters each, string literals included)`
+    );
+  }
+  if (configs.length > 0) {
+    sent.push(
+      `${configs.length} config files as key = value lines (${configs.map((c) => c.file).join(", ")}; up to ` +
+        `${MAX_CONFIG_PROMPT_LINES} lines each; values under secret-looking keys and credentials in URLs are redacted)`
+    );
+  }
+  console.log(`\n--ai: sending your question and ${sent.join(" and ")} to the Anthropic API using model ${NARRATION_MODEL}.`);
+  const answer = await answerQuestion(new Anthropic({ apiKey }), question, classes, model.classes.length, configs);
   console.log(answer ? `\nAI answer:\n${answer}` : "\nNo AI answer was produced; see the local results above.");
 }
 
@@ -143,12 +166,14 @@ async function main(argv: string[]): Promise<void> {
   if (!repoPath) return;
 
   const outputPath = resolve(repoPath, "springlens-report.md");
-  if (existsSync(outputPath) && lstatSync(outputPath).isSymbolicLink()) {
-    console.error(
-      `SpringLens: refusing to write ${outputPath} because it is a symbolic link. Remove it and re-run.`
-    );
-    process.exitCode = 1;
-    return;
+  const htmlPath = resolve(repoPath, "springlens-report.html");
+  const wantsHtml = flags.includes("--html");
+  for (const path of wantsHtml ? [outputPath, htmlPath] : [outputPath]) {
+    if (isSymbolicLink(path)) {
+      console.error(`SpringLens: refusing to write ${path} because it is a symbolic link. Remove it and re-run.`);
+      process.exitCode = 1;
+      return;
+    }
   }
 
   const looksLikeMavenOrGradle =
@@ -192,8 +217,10 @@ async function main(argv: string[]): Promise<void> {
 
   const report = renderMarkdownReport(model);
   writeFileSync(outputPath, report, "utf-8");
+  if (wantsHtml) writeFileSync(htmlPath, renderHtmlReport(model), "utf-8");
 
   console.log(`Report written to: ${outputPath}`);
+  if (wantsHtml) console.log(`HTML report written to: ${htmlPath}`);
   console.log(`Ask a question about the codebase: springlens ask ${target} "<question>"`);
 }
 

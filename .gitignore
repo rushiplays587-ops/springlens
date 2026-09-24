@@ -4,6 +4,7 @@ dist/
 .DS_Store
 .env
 springlens-report.md
+springlens-report.html
 
 # Local coordination status (repo is public; keep private)
 STATUS.md
