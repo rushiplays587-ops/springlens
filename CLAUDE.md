@@ -25,13 +25,25 @@ be added to the `test` script in `package.json` or they will not run.
 - `build.ts` — builds the whole-repo model, loads Maven/Gradle dependencies
 - `depscan.ts` — Maven/Gradle parsing and the curated risk rules
 - `narrate.ts` — Anthropic API narrative layer (pure prompt builder + network call)
-- `report.ts` — Markdown rendering
-- `cli.ts` — argument handling and the run flow
+- `blocks.ts` — the report as neutral blocks, rendered to Markdown or HTML
+  (all repo-derived text is untrusted: escape it)
+- `report.ts` — builds the report from the model
+- `config.ts` — `application*`/`bootstrap*` yml/yaml/properties analysis
+  (uses the one runtime dependency, `yaml`, with no custom tags)
+- `redact.ts` — secret redaction for config values; runs at parse time and
+  again when any prompt is built
+- `ask.ts` — local BM25 retrieval for `springlens ask` (pure functions)
+- `cli.ts` — argument handling and the run flow (`report`, `ask`, `--ai`, `--html`)
 - `model.ts` — shared types
 
 At the repo root (not in `src/`): `test-fixture/` is a small realistic Spring
 app with deliberate traps (decoy comment, `dependencyManagement`-pinned old
-log4j) that the tests scan.
+log4j) that the tests scan; `test-fixture-large/` is a 16-class shop app used
+for `ask` questions.
+
+Secrets rule: config values are redacted and must never reach a report, the
+HTML, `ask` output or an API prompt unredacted. Any new place that prints or
+sends config text needs a fake-secret regression test.
 
 ## How the parser works (read before touching it)
 No AST: v1 is heuristic text scanning, by design. Each file is handled as two
@@ -55,9 +67,11 @@ aligned: never change the length of either.
   reason; the tool should stay small and easy to trust.
 
 ## Roadmap
-Sprints 0-3 and a hardening pass are done. Next is Sprint 4: "ask the
-codebase" — question answering grounded in the scanned repo. Later: an
-`application.yml` analysis and HTML output (Sprint 5), then launch (Sprint 6).
+Sprints 0-5 are done: extraction, AI narrative, dependency risk, `ask`,
+configuration analysis and HTML output, plus review-driven hardening and a
+real-world validation on spring-petclinic-microservices. Next is Sprint 6:
+launch, which needs the owner (public announcement, package publishing, and a
+first real `--ai` trial with his API key).
 
 ## Permissions from the owner
 - Pushing completed, tested work to `origin` is pre-authorized.
