@@ -8,7 +8,7 @@
  * renderers still escape every string, so a mistake here cannot inject markup.
  */
 
-export type Span = string | { code: string } | { i: string } | { b: string };
+export type Span = string | { code: string } | { i: string } | { b: string } | { text: string };
 
 export type Block =
   | { t: "h"; level: 1 | 2 | 3 | 4; text: Span[] }
@@ -25,6 +25,13 @@ function mdEscapeText(s: string): string {
   return oneLine(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/** Untrusted prose (e.g. AI narrative): flattened to one line and stripped of every Markdown construct. */
+function mdProse(s: string): string {
+  return oneLine(s)
+    .replace(/[\\`*_{}\[\]()<>#+!|~&]/g, (c) => (c === "<" ? "&lt;" : c === ">" ? "&gt;" : c === "&" ? "&amp;" : "\\" + c))
+    .replace(/^(\s*)([-=])/, "$1\\$2");
+}
+
 function mdCode(s: string): string {
   const text = oneLine(s);
   const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
@@ -38,6 +45,7 @@ function mdSpans(spans: Span[]): string {
     .map((s) => {
       if (typeof s === "string") return mdEscapeText(s);
       if ("code" in s) return mdCode(s.code);
+      if ("text" in s) return mdProse(s.text);
       if ("i" in s) return `*${mdEscapeText(s.i).replace(/[*\\]/g, "\\$&")}*`;
       return `**${mdEscapeText(s.b).replace(/[*\\]/g, "\\$&")}**`;
     })
@@ -92,6 +100,7 @@ function htmlSpans(spans: Span[]): string {
     .map((s) => {
       if (typeof s === "string") return escapeHtml(s);
       if ("code" in s) return `<code>${escapeHtml(s.code)}</code>`;
+      if ("text" in s) return escapeHtml(s.text);
       if ("i" in s) return `<em>${escapeHtml(s.i)}</em>`;
       return `<strong>${escapeHtml(s.b)}</strong>`;
     })

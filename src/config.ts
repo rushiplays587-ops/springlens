@@ -8,7 +8,7 @@ import {
   ConfigSummary,
   GatewayRoute,
 } from "./model.js";
-import { redactText, redactValue, truncate } from "./redact.js";
+import { redactRouteArgs, redactText, redactValue, stripControls, truncate } from "./redact.js";
 
 /**
  * Reads Spring Boot configuration files (application and bootstrap, .yml/.yaml/
@@ -28,6 +28,7 @@ export const MAX_CONFIG_PROPERTIES = 5000;
 const MAX_DEPTH = 20;
 const MAX_DOCUMENTS = 50;
 const MAX_ALIASES = 100;
+const MAX_LOGICAL_LINE = 64 * 1024;
 
 const CONFIG_NAME = /^(application|bootstrap)(?:-(.+))?\.(ya?ml|properties)$/i;
 
@@ -76,7 +77,7 @@ export function parsePropertiesText(text: string): RawProp[][] {
 
     // A trailing odd number of backslashes continues the logical line on the next physical line.
     line = trimmed;
-    while (/(?:^|[^\\])(?:\\\\)*\\$/.test(line) && i + 1 < lines.length) {
+    while (line.length < MAX_LOGICAL_LINE && /(?:^|[^\\])(?:\\\\)*\\$/.test(line) && i + 1 < lines.length) {
       line = line.slice(0, -1) + lines[++i].replace(/^[ \t\f]+/, "");
     }
 
@@ -141,13 +142,18 @@ function safeError(message: string): string {
 }
 
 /** Each YAML document as flat properties. A document that fails to parse is skipped and its error returned. */
-function parseYamlText(text: string): { docs: { props: RawProp[]; truncated: boolean }[]; errors: string[] } {
+function parseYamlText(text: string): {
+  docs: { props: RawProp[]; truncated: boolean }[];
+  errors: string[];
+  limitNote?: string;
+} {
   const docs: { props: RawProp[]; truncated: boolean }[] = [];
   const errors: string[] = [];
   const parsed = parseAllDocuments(text, {
     merge: true,
     prettyErrors: false,
     version: "1.2",
+    logLevel: "silent",
   });
   const list = Array.isArray(parsed) ? parsed : [parsed];
 
@@ -166,8 +172,8 @@ function parseYamlText(text: string): { docs: { props: RawProp[]; truncated: boo
       errors.push(safeError((err as Error).message));
     }
   }
-  if (list.length > MAX_DOCUMENTS) errors.push(`more than ${MAX_DOCUMENTS} YAML documents; the rest were ignored`);
-  return { docs, errors };
+  const limitNote = list.length > MAX_DOCUMENTS ? `more than ${MAX_DOCUMENTS} YAML documents; the rest were ignored` : undefined;
+  return { docs, errors, limitNote };
 }
 
 // ---------- summary ----------
@@ -179,8 +185,9 @@ function kindFromJdbc(url: string): { kind: string; target: string } | null {
   if (!m) return null;
   const kind = m[1].toLowerCase();
   const rest = m[2];
-  const net = rest.match(/^(?:\/\/)?(?:[^/@]*@)?([^/?;:]+)(?::(\d+))?/);
-  if (rest.startsWith("//") && net) return { kind, target: net[2] ? `${net[1]}:${net[2]}` : net[1] };
+  const afterAt = rest.includes("@") ? rest.slice(rest.lastIndexOf("@") + 1) : rest;
+  const net = afterAt.replace(/^\/\//, "").match(/^(\[[^\]]+\]|[^/?;:]+)(?::(\d+))?/);
+  if ((rest.startsWith("//") || rest.includes("@")) && net) return { kind, target: net[2] ? `${net[1]}:${net[2]}` : net[1] };
   // jdbc:h2:mem:testdb, jdbc:hsqldb:file:/path — no network host
   return { kind, target: rest.split(/[;?]/)[0] || "(unspecified)" };
 }
@@ -195,8 +202,16 @@ const BACKEND_KEYS: { norm: string; kind: string; parse: (v: string) => string |
   { norm: "spring.elasticsearch.uris", kind: "elasticsearch", parse: (v) => v },
 ];
 
-const ROUTE_KEY = /^spring\.cloud\.gateway\.(?:server\.(?:webflux|webmvc)\.)?routes\[(\d+)\]\.(.+)$/;
-const DEFAULT_FILTER_KEY = /^spring\.cloud\.gateway\.(?:server\.(?:webflux|webmvc)\.)?default-filters\[(\d+)\](?:\.(.+))?$/;
+const ROUTE_KEY = /^spring\.cloud\.gateway\.(?:mvc\.|server\.(?:webflux|webmvc)\.)?routes\[(\d+)\]\.(.+)$/i;
+const DEFAULT_FILTER_KEY = /^spring\.cloud\.gateway\.(?:mvc\.|server\.(?:webflux|webmvc)\.)?default-filters\[(\d+)\](?:\.(.+))?$/i;
+
+/** "AddRequestHeader=X-Api-Key, value": redacts the arguments after a secret-looking header/parameter name. */
+function redactShortcut(text: string): string {
+  const eq = text.indexOf("=");
+  if (eq <= 0) return text;
+  const args = text.slice(eq + 1).split(",").map((a) => a.trim());
+  return `${text.slice(0, eq)}=${redactRouteArgs(args).join(",")}`;
+}
 
 /** Turns `predicates[0]` (shortcut string) or `predicates[0].name` + `.args.x` (map form) into "Path=/x" or "Name(arg=value)" strings. */
 function collectShortcutList(props: ConfigProperty[], listPath: string): string[] {
@@ -217,7 +232,10 @@ function collectShortcutList(props: ConfigProperty[], listPath: string): string[
   }
   return [...items.entries()]
     .sort((a, b) => a[0] - b[0])
-    .map(([, it]) => it.direct ?? (it.name ? `${it.name}${it.args.length ? "(" + it.args.join(", ") + ")" : ""}` : ""))
+    .map(([, it]) => {
+      if (it.direct !== undefined) return redactShortcut(it.direct);
+      return it.name ? `${it.name}${it.args.length ? "(" + redactRouteArgs(it.args).join(", ") + ")" : ""}` : "";
+    })
     .filter((s) => s !== "");
 }
 
@@ -258,7 +276,7 @@ function summarize(props: ConfigProperty[]): ConfigSummary {
 
   const backends: BackendRef[] = [];
   for (const p of props) {
-    if (/^spring\.datasource(?:\.[^.]+)?\.url$/i.test(p.key)) {
+    if (/^spring\.datasource(?:\.[^.]+)*\.(?:jdbc-?url|url)$/i.test(p.key)) {
       const jdbc = kindFromJdbc(p.value);
       if (jdbc) backends.push({ ...jdbc, key: p.key });
       else if (p.value) backends.push({ kind: "datasource", target: p.value, key: p.key });
@@ -330,9 +348,10 @@ function summarize(props: ConfigProperty[]): ConfigSummary {
 // ---------- files ----------
 
 function toProperties(raw: RawProp[]): ConfigProperty[] {
-  return raw.map(({ key, value }) => {
-    const safeKey = truncate(key, 200);
-    const { value: v, redacted } = redactValue(key, value);
+  return raw.map(({ key: rawKey, value: rawValue }) => {
+    const key = stripControls(rawKey);
+    const safeKey = truncate(redactText(key), 200);
+    const { value: v, redacted } = redactValue(key, stripControls(rawValue));
     return { key: safeKey, value: v, redacted };
   });
 }
@@ -381,6 +400,7 @@ export function parseConfigFile(relPath: string, text: string): ConfigFile {
         truncated: d.truncated,
       });
     }
+    if (yamlResult?.limitNote && yamlResult.errors.length === 0) base.error = yamlResult.limitNote;
     if (yamlResult && yamlResult.errors.length > 0) {
       base.error = `unparsable YAML (${yamlResult.errors[0]})${
         base.documents.length > 0 ? "; the documents that did parse are shown" : ""

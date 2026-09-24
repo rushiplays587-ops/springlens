@@ -364,3 +364,88 @@ test("parser error messages are scrubbed: a secret quoted in a YAML error does n
   assert.ok(cfg.error, "expected an error");
   assert.ok(!cfg.error!.includes("FAKE-ERR-SECRET-1"), cfg.error);
 });
+
+// ---- gaps found by independent review ----
+
+test("gateway filters and predicates that carry secrets under innocent keys are redacted (shortcut and map forms)", () => {
+  const yaml = [
+    "spring:",
+    "  cloud:",
+    "    gateway:",
+    "      routes:",
+    "        - id: r",
+    "          uri: lb://r",
+    "          predicates:",
+    "            - Header=X-Token, FAKE-PRED-SECRET-1",
+    "            - Query=apikey, FAKE-QUERY-SECRET-2",
+    "          filters:",
+    "            - AddRequestHeader=Authorization, Bearer FAKE-FILTER-SECRET-3",
+    "            - AddRequestHeader=X-Api-Key, FAKE-FILTER-SECRET-4",
+    "            - AddRequestHeader=X-Request-Id, harmless",
+    "            - name: AddRequestHeader",
+    "              args:",
+    "                name: Authorization",
+    "                value: FAKE-MAP-SECRET-5",
+  ].join("\n");
+  const cfg = parseConfigFile("application.yml", yaml);
+  const dump = JSON.stringify(cfg.documents[0].summary);
+  for (const n of [1, 2, 3, 4, 5]) assert.ok(!/FAKE-[A-Z]+-SECRET-/.test(dump), `secret ${n} leaked: ${dump}`);
+  assert.ok(dump.includes("harmless"), "non-secret header values stay readable");
+});
+
+test("gateway routes are found under the Gateway MVC spelling spring.cloud.gateway.mvc.routes", () => {
+  const s = parseConfigFile("application.yml", "spring:\n  cloud:\n    gateway:\n      mvc:\n        routes:\n          - id: m\n            uri: http://m\n").documents[0].summary;
+  assert.deepEqual(s.routes.map((r) => r.id), ["m"]);
+});
+
+test("multi-datasource jdbc-url keys (hikari and named datasources) are summarised", () => {
+  const s = parseConfigFile(
+    "application.yml",
+    "spring:\n  datasource:\n    hikari:\n      jdbc-url: jdbc:postgresql://a.internal:5432/x\n    primary:\n      jdbc-url: jdbc:mysql://b.internal/y\n"
+  ).documents[0].summary;
+  assert.deepEqual(s.backends.map((b) => [b.kind, b.target]), [["postgresql", "a.internal:5432"], ["mysql", "b.internal"]]);
+});
+
+test("Oracle thin URLs show the host without the credentials; IPv6 hosts survive", () => {
+  const ora = parseConfigFile("application.properties", "spring.datasource.url=jdbc:oracle:thin:scott/FAKE-ORA-PW@//dbhost:1521/svc\n");
+  assert.deepEqual(ora.documents[0].summary.backends.map((b) => b.target), ["dbhost:1521"]);
+  assert.ok(!JSON.stringify(ora).includes("FAKE-ORA-PW"));
+  const v6 = parseConfigFile("application.properties", "spring.datasource.url=jdbc:postgresql://[::1]:5432/x\n");
+  assert.deepEqual(v6.documents[0].summary.backends.map((b) => b.target), ["[::1]:5432"]);
+});
+
+test("secrets in redis URLs, in keys, and under pass/pw keys never reach the parsed model", () => {
+  const cfg = parseConfigFile(
+    "application.properties",
+    [
+      "spring.data.redis.url=redis://:FAKE-REDIS-PW@redis:6379",
+      "spring.datasource.pass=FAKE-PASS-1",
+      "x.pw=FAKE-PW-2",
+      "jdbc:x?password=FAKE-KEY-PW=v",
+      "hdr=Basic RkFLRS1CQVNJQy0z",
+    ].join("\n")
+  );
+  const dump = JSON.stringify(cfg);
+  for (const fake of ["FAKE-REDIS-PW", "FAKE-PASS-1", "FAKE-PW-2", "FAKE-KEY-PW", "RkFLRS1CQVNJQy0z"]) assert.ok(!dump.includes(fake), `${fake} leaked`);
+});
+
+test("control characters in keys and values are stripped at parse time (no terminal escapes or forged lines downstream)", () => {
+  const cfg = parseConfigFile("application.yml", 'a: "x\\u001b[31mred\\nforged: line"\n"k\\u001b[2Jey": v\n');
+  for (const p of cfg.documents[0].properties) {
+    assert.ok(!/[\u0000-\u001f\u007f-\u009f]/.test(p.key + p.value), JSON.stringify(p));
+  }
+});
+
+test("more than 50 YAML documents is reported as a limit, not as unparsable YAML, and complex keys do not print to stderr", () => {
+  const cfg = parseConfigFile("application.yml", Array.from({ length: 60 }, (_, i) => `k${i}: v`).join("\n---\n"));
+  assert.equal(cfg.documents.length, 50);
+  assert.match(cfg.error ?? "", /^more than 50 YAML documents/);
+});
+
+test(".properties files with tens of thousands of continuation lines parse in bounded time", () => {
+  const text = "a=" + Array.from({ length: 40000 }, () => "x \\").join("\n") + "\nb=1\n";
+  const started = Date.now();
+  const cfg = parseConfigFile("application.properties", text);
+  assert.ok(Date.now() - started < 2000, `took ${Date.now() - started} ms`);
+  assert.ok(cfg.documents.length >= 0);
+});

@@ -39,7 +39,7 @@ function classBlocks(cls: ClassInfo): Block[] {
       : [{ i: cls.file }, " — Spring Data interface"];
   blocks.push({ t: "p", text: label });
 
-  if (cls.narrative) blocks.push({ t: "p", text: [cls.narrative] });
+  if (cls.narrative) blocks.push({ t: "p", text: [{ text: cls.narrative }] });
 
   if (cls.endpoints.length > 0) {
     blocks.push({ t: "p", text: ["Endpoints:"] });

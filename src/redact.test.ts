@@ -109,3 +109,50 @@ test("redactValue is idempotent, so re-redacting for a prompt changes nothing", 
     assert.equal(redactValue(k, once).value, once);
   }
 });
+
+// ---- gaps found by independent review ----
+import { redactRouteArgs, stripControls } from "./redact.js";
+
+test("URL credentials: empty user (redis), passwords containing @, lone token userinfo, and Oracle thin user/password@host", () => {
+  assert.equal(redactText("redis://:hunter2@redis:6379"), `redis://:${REDACTED}@redis:6379`);
+  assert.equal(redactText("mongodb://u:hu@nter@h/db"), `mongodb://u:${REDACTED}@h/db`);
+  assert.equal(redactText("https://abc123tokenX@github.com/x.git"), `https://${REDACTED}@github.com/x.git`);
+  assert.equal(redactText("ssh://git@github.com/x.git"), "ssh://git@github.com/x.git");
+  assert.equal(redactText("jdbc:oracle:thin:scott/hunter2@//h:1521/x"), `jdbc:oracle:thin:scott/${REDACTED}@//h:1521/x`);
+  assert.equal(redactText("jdbc:oracle:thin:scott/hunter2@h:1521:orcl"), `jdbc:oracle:thin:scott/${REDACTED}@h:1521:orcl`);
+});
+
+test("URLs with an @ later in the path or a plain host:port are not mangled", () => {
+  assert.equal(redactText("http://host:8080/users"), "http://host:8080/users");
+  assert.equal(redactText("lb://vets-service"), "lb://vets-service");
+});
+
+test("secret words: pass, pw, pwd and friends in keys, query parameters and placeholder defaults", () => {
+  for (const k of ["spring.datasource.pass", "x.pw", "app.dbpass", "app.db-pwd"]) assert.equal(isSecretKey(k), true, k);
+  assert.equal(redactText("jdbc:mysql://h/x?pass=hunter2&user=u"), `jdbc:mysql://h/x?pass=${REDACTED}&user=u`);
+  assert.equal(redactText("${DB_PASS:hunter2P}"), `\${DB_PASS:${REDACTED}}`);
+  assert.equal(redactText("${X_PW:hunter2Q}"), `\${X_PW:${REDACTED}}`);
+});
+
+test("Basic and Bearer credentials are redacted under any key, but the plain word is left alone", () => {
+  assert.equal(redactText("Authorization: Basic dXNlcjpwYXNz"), `Authorization: Basic ${REDACTED}`);
+  assert.equal(redactText("Bearer abc.def-ghi"), `Bearer ${REDACTED}`);
+  assert.equal(redactText("Token bucket configuration for Basic auth"), "Token bucket configuration for Basic auth");
+});
+
+test("redactRouteArgs hides the value after a secret-looking header or parameter name (shortcut and map forms)", () => {
+  assert.deepEqual(redactRouteArgs(["Authorization", "Bearer hunter2W"]), ["Authorization", REDACTED]);
+  assert.deepEqual(redactRouteArgs(["X-Api-Key", "hunter2X"]), ["X-Api-Key", REDACTED]);
+  assert.deepEqual(redactRouteArgs(["name=X-Token", "value=hunter2Y"]), ["name=X-Token", `value=${REDACTED}`]);
+  assert.deepEqual(redactRouteArgs(["X-Request-Id", "abc"]), ["X-Request-Id", "abc"]);
+  assert.deepEqual(redactRouteArgs([]), []);
+});
+
+test("a long all-lowercase hyphenated service name is not mistaken for a key", () => {
+  assert.equal(redactText("customer-order-management-service-v2"), "customer-order-management-service-v2");
+  assert.equal(redactText("aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC1dE3fG5"), REDACTED);
+});
+
+test("stripControls removes terminal escapes and newlines from printed text", () => {
+  assert.equal(stripControls("a\u001b[31mred\u001b[0m\nb\u0007"), "a [31mred [0m b ");
+});

@@ -1,4 +1,5 @@
 import { ClassInfo, ConfigFile } from "./model.js";
+import { stripControls } from "./redact.js";
 
 /**
  * Local retrieval for "ask the codebase". Everything here is pure: no network,
@@ -447,7 +448,8 @@ export function formatAnswer(
         ? ""
         : " Pass --ai for a written answer (sends the top classes' source and config lines to Anthropic).")
   );
-  return lines.join("\n");
+  // File names and config text come from the repo: keep terminal escapes and forged line breaks out of the output.
+  return lines.map(stripControls).join("\n");
 }
 
 /** Class-only convenience wrapper around formatAnswer. */

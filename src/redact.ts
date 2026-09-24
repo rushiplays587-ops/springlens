@@ -17,7 +17,7 @@ export const MAX_VALUE_CHARS = 300;
 
 // Any dotted segment containing one of these marks the whole key secret.
 const SECRET_WORDS =
-  "password|passwd|passphrase|pwd|secret|token|key|credential|private|auth|cert|salt|signature";
+  "password|passwd|passphrase|pass|pwd|pw|secret|token|key|credential|private|auth|cert|salt|signature";
 const SECRET_KEY = new RegExp(SECRET_WORDS, "i");
 
 export function isSecretKey(key: string): boolean {
@@ -27,7 +27,14 @@ export function isSecretKey(key: string): boolean {
 // A bare environment placeholder with no default, e.g. ${DB_PASSWORD}, reveals nothing and is useful to read.
 const BARE_PLACEHOLDER = /^\$\{[A-Za-z0-9_.\-]+\}$/;
 
-const URL_USERINFO = /([a-z][a-z0-9+.\-]*:\/\/)([^\s/:@]+):([^\s/@]*)@/gi;
+// scheme://user:password@host — the user may be empty (redis://:pw@host) and the password may contain "@".
+const URL_USERINFO = /([a-z][a-z0-9+.\-]*:\/\/)([^\s:@\/]*):([^\s\/]*)@/gi;
+// scheme://token@host — a lone userinfo is often an access token (git over https); "git@" is only a user name.
+const URL_LONE_USERINFO = /([a-z][a-z0-9+.\-]*:\/\/)(?!git@)([^\s:@\/]+)@/gi;
+// jdbc:oracle:thin:user/password@host
+const JDBC_SLASH_CREDENTIALS = /(jdbc:[a-z0-9]+:[a-z0-9]+:)([^\s\/@:]+)\/([^\s@]+)@/gi;
+// HTTP Authorization header values
+const AUTH_SCHEME = /\b(Basic|Bearer)\s+[A-Za-z0-9._~+\/=\-]{6,}/g;
 const SECRET_PARAM = new RegExp(
   `(^|[?&;,\\s])([^=&;,\\s?]*(?:${SECRET_WORDS})[^=&;,\\s?]*)=([^&;,\\s]*)`,
   "gi"
@@ -49,15 +56,44 @@ const TOKEN_SHAPES: RegExp[] = [
 
 /** A long run of letters and digits that mixes both is almost always a key or hash, not a class or path segment. */
 function redactOpaqueTokens(text: string): string {
-  return text.replace(/[A-Za-z0-9_\-]{32,}/g, (run) =>
-    /[A-Za-z]/.test(run) && /[0-9]/.test(run) ? REDACTED : run
-  );
+  return text.replace(/[A-Za-z0-9_\-]{32,}/g, (run) => {
+    if (!/[A-Za-z]/.test(run) || !/[0-9]/.test(run)) return run;
+    // A long all-lowercase hyphenated run is a service or artifact name, not a key.
+    const mixedCase = /[a-z]/.test(run) && /[A-Z]/.test(run);
+    const hex = /^[0-9a-f]+$/i.test(run);
+    return mixedCase || hex || !run.includes("-") ? REDACTED : run;
+  });
+}
+
+/** Removes control characters (terminal escapes, forged line breaks) from text that will be printed. */
+export function stripControls(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ");
+}
+
+/**
+ * Scrubs the argument list of a gateway predicate or filter such as
+ * AddRequestHeader=X-Api-Key, value. When the first argument (a header or
+ * parameter name) or a `name=` argument looks secret, every other argument is
+ * redacted: the value sits under an innocent key so key-based redaction cannot see it.
+ */
+export function redactRouteArgs(args: string[]): string[] {
+  const nameArg = args.find((a) => /^name=/i.test(a));
+  const nameValue = nameArg ? nameArg.replace(/^name=/i, "") : args[0] ?? "";
+  if (!isSecretKey(nameValue)) return args;
+  return args.map((a) => {
+    if (a === nameArg || (!nameArg && a === args[0])) return a;
+    const eq = a.indexOf("=");
+    return eq > 0 && /^[A-Za-z_][\w-]*$/.test(a.slice(0, eq)) ? `${a.slice(0, eq)}=${REDACTED}` : REDACTED;
+  });
 }
 
 /** Redacts secrets embedded in free text: URL credentials, secret query parameters, token shapes, placeholder defaults. */
 export function redactText(text: string): string {
   let out = text.replace(PEM_BLOCK, REDACTED);
+  out = out.replace(JDBC_SLASH_CREDENTIALS, `$1$2/${REDACTED}@`);
   out = out.replace(URL_USERINFO, `$1$2:${REDACTED}@`);
+  out = out.replace(URL_LONE_USERINFO, `$1${REDACTED}@`);
+  out = out.replace(AUTH_SCHEME, `$1 ${REDACTED}`);
   out = out.replace(SECRET_PARAM, `$1$2=${REDACTED}`);
   out = out.replace(SECRET_PLACEHOLDER_DEFAULT, `\${$1:${REDACTED}}`);
   for (const shape of TOKEN_SHAPES) out = out.replace(shape, REDACTED);

@@ -205,3 +205,28 @@ test("Markdown report includes the gateway routing table and config usage for a 
   assert.ok(md.includes("`notify.timeout-seconds` (defined)"));
   assert.ok(md.includes("`missing.setting` (not in scanned config, no default)"));
 });
+
+test("Markdown: AI narrative is untrusted prose — links, headings, HTML and emphasis in it are neutralised and it stays on one line", () => {
+  const md = renderMarkdown([
+    { t: "p", text: [{ text: "# Heading\n[click](https://evil.example) <b>x</b> *bold* `code` | pipe\n- item" }] },
+  ]);
+  const line = md.trim();
+  assert.ok(!line.includes("\n"));
+  assert.ok(!line.startsWith("# "));
+  assert.ok(!/(?<!\\)\[click\]\(/.test(line), line);
+  assert.ok(!line.includes("<b>"));
+  assert.ok(!/(?<!\\)\*bold(?<!\\)\*/.test(line));
+  assert.ok(line.includes("\\[click\\]\\(https://evil.example\\)") || line.includes("\\[click\\]"));
+});
+
+test("HTML: narrative text is escaped like everything else", () => {
+  const html = renderHtml("t", [{ t: "p", text: [{ text: "<img src=x onerror=alert(1)> & 'quotes'" }] }]);
+  assert.ok(html.includes("&lt;img src=x onerror=alert(1)&gt; &amp; &#39;quotes&#39;"));
+});
+
+test("a narrative attached to a class is rendered through the untrusted-prose path in the report", () => {
+  const model = hostileModel();
+  model.classes[0].narrative = "[x](javascript:alert(9)) <script>1</script>";
+  const md = renderMarkdownReport(model);
+  assert.ok(!md.includes("[x](javascript:alert(9))"));
+});

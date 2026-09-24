@@ -175,7 +175,7 @@ function loadConfigs(rootPath: string): ConfigFile[] {
       }
       return parseConfigFile(rel, readFileSync(file, "utf-8"));
     } catch (err) {
-      return { ...parseConfigFile(rel, ""), error: `unreadable (${(err as Error).message.split("\n")[0]})` };
+      return { ...parseConfigFile(rel, ""), error: `unreadable (${(err as NodeJS.ErrnoException).code ?? "read error"})` };
     }
   });
 }
