@@ -132,8 +132,10 @@ Known limitations (documented, not oversights):
   otherwise they are reported as "check by hand". A module also inherits
   `<dependencyManagement>` versions from those in-repo parents; a parent outside the repo (including `spring-boot-starter-parent`'s
   own managed versions) is not read, so a dependency whose version comes only from
-  there has no version to check. Maven `<profiles>` and `<build>` (plugin
-  dependencies) are ignored.
+  there has no version to check. A parent is only followed when the pom at its
+  `<relativePath>` really has the declared groupId and artifactId. Maven
+  `<profiles>`, `<build>` and `<reporting>` (plugin dependencies) are ignored, and
+  modules nested more than 10 levels deep are not scanned.
 
 If accuracy stops being enough in practice, a real AST parser (e.g.
 `java-parser`) is the planned upgrade — see the doc comment at the top of

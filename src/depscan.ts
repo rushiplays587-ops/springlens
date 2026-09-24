@@ -130,7 +130,7 @@ export function assessDependencies(deps: Dependency[]): RiskFinding[] {
 
 /** Module directory names declared in a pom's <modules> block. */
 export function parsePomModules(xml: string): string[] {
-  const clean = xml.replace(/<!--[\s\S]*?-->/g, "");
+  const clean = stripXmlComments(xml).replace(/<profiles>[\s\S]*?<\/profiles>/g, "");
   const block = clean.match(/<modules>([\s\S]*?)<\/modules>/)?.[1] ?? "";
   return [...block.matchAll(/<module>([^<]+)<\/module>/g)].map((m) => m[1].trim());
 }
@@ -197,19 +197,26 @@ interface DependencyBlock {
   classifier?: string;
 }
 
+/**
+ * Removes comments and defuses CDATA sections (their text is kept, with < and > escaped) so markup-looking
+ * text inside them can't close or open a block we scan for.
+ */
 function stripXmlComments(xml: string): string {
-  return xml.replace(/<!--[\s\S]*?-->/g, "");
+  return xml
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, (_, text: string) => text.replace(/</g, "&lt;").replace(/>/g, "&gt;"));
 }
 
 /**
- * The project-level part of a pom: comments gone, and <profiles> and <build> removed. Profile
+ * The project-level part of a pom: comments gone, and <profiles>, <build> and <reporting> removed. Profile
  * properties and pins only apply when the profile is active, and dependencies under <build> belong
  * to plugins, so neither may override or add to what the project itself declares.
  */
 function projectXml(rawXml: string): string {
   return stripXmlComments(rawXml)
     .replace(/<profiles>[\s\S]*?<\/profiles>/g, "")
-    .replace(/<build>[\s\S]*?<\/build>/g, "");
+    .replace(/<build>[\s\S]*?<\/build>/g, "")
+    .replace(/<reporting>[\s\S]*?<\/reporting>/g, "");
 }
 
 const MAX_PROPERTY_DEPTH = 10;
@@ -232,7 +239,7 @@ function managedKey(d: DependencyBlock): string {
 function dependencyBlocks(xml: string): DependencyBlock[] {
   const blocks: DependencyBlock[] = [];
   for (const match of xml.matchAll(/<dependency>([\s\S]*?)<\/dependency>/g)) {
-    const block = match[1];
+    const block = match[1].replace(/<exclusions>[\s\S]*?<\/exclusions>/g, "");
     const tag = (name: string) => block.match(new RegExp(`<${name}>([^<]+)</${name}>`))?.[1]?.trim();
     const groupId = tag("groupId");
     const artifactId = tag("artifactId");
@@ -245,6 +252,23 @@ function dependencyBlocks(xml: string): DependencyBlock[] {
 
 function pomContext(xml: string, inherited?: PomContext) {
   const properties = new Map(inherited?.properties);
+  // Built-in project.* properties describe THIS pom, so they override anything inherited.
+  const self = pomCoordinates(xml);
+  const parentXml = xml.match(/<parent>([\s\S]*?)<\/parent>/)?.[1] ?? "";
+  const tagOf = (block: string, name: string) => block.match(new RegExp(`<${name}>([^<]+)</${name}>`))?.[1]?.trim();
+  const parentVersion = tagOf(parentXml, "version");
+  const builtIns: [string, string | undefined][] = [
+    ["project.groupId", self.groupId],
+    ["project.artifactId", self.artifactId],
+    ["project.version", self.version ?? parentVersion],
+    ["project.parent.groupId", tagOf(parentXml, "groupId")],
+    ["project.parent.artifactId", tagOf(parentXml, "artifactId")],
+    ["project.parent.version", parentVersion],
+  ];
+  for (const [key, value] of builtIns) {
+    if (value === undefined) properties.delete(key);
+    else properties.set(key, value);
+  }
   const propsBlock = xml.match(/<properties>([\s\S]*?)<\/properties>/)?.[1] ?? "";
   for (const p of propsBlock.matchAll(/<([\w.\-]+)>([^<]*)<\/\1>/g)) {
     properties.set(p[1], p[2].trim());
@@ -265,6 +289,31 @@ function pomContext(xml: string, inherited?: PomContext) {
 export function parsePomContext(rawXml: string, inherited?: PomContext): PomContext {
   const { properties, managed } = pomContext(projectXml(rawXml), inherited);
   return { properties, managed };
+}
+
+/** The pom's own groupId/artifactId/version (groupId falls back to the parent's, as in Maven). */
+export function pomCoordinates(rawXml: string): { groupId?: string; artifactId?: string; version?: string } {
+  const xml = projectXml(rawXml);
+  const parentBlock = xml.match(/<parent>([\s\S]*?)<\/parent>/)?.[1] ?? "";
+  const own = xml
+    .replace(/<parent>[\s\S]*?<\/parent>/g, "")
+    .replace(/<dependencyManagement>[\s\S]*?<\/dependencyManagement>/g, "")
+    .replace(/<dependencies>[\s\S]*?<\/dependencies>/g, "")
+    .replace(/<(properties|modules|licenses|developers|scm|organization)>[\s\S]*?<\/\1>/g, "");
+  const tag = (block: string, name: string) => block.match(new RegExp(`<${name}>([^<]+)</${name}>`))?.[1]?.trim();
+  return {
+    groupId: tag(own, "groupId") ?? tag(parentBlock, "groupId"),
+    artifactId: tag(own, "artifactId"),
+    version: tag(own, "version"),
+  };
+}
+
+/** The coordinates a pom's <parent> element declares. */
+export function parentCoordinates(rawXml: string): { groupId?: string; artifactId?: string } | null {
+  const block = stripXmlComments(rawXml).match(/<parent>([\s\S]*?)<\/parent>/)?.[1];
+  if (block === undefined) return null;
+  const tag = (name: string) => block.match(new RegExp(`<${name}>([^<]+)</${name}>`))?.[1]?.trim();
+  return { groupId: tag("groupId"), artifactId: tag("artifactId") };
 }
 
 /**

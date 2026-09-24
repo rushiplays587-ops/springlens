@@ -8,6 +8,7 @@ import {
   parsePomContext,
   parsePomDependencies,
   parsePomModules,
+  pomCoordinates,
 } from "./depscan.js";
 
 test("compareVersions orders dotted version numbers correctly", () => {
@@ -262,4 +263,44 @@ test("parsePomDependencies ignores profile properties and pins, and dependencies
   const deps = parsePomDependencies(xml);
   assert.deepEqual(deps.map((d) => `${d.artifactId}:${d.version}`), ["real:2.20.0"]);
   assert.equal(parsePomContext(xml).properties.get("v"), "2.20.0");
+});
+
+test("parsePomDependencies resolves ${project.version} and ${project.parent.version} from the pom itself", () => {
+  const xml = `<project><parent><groupId>p</groupId><artifactId>par</artifactId><version>7</version></parent>
+    <artifactId>me</artifactId><version>3.1</version>
+    <dependencies>
+      <dependency><groupId>g</groupId><artifactId>a</artifactId><version>\${project.version}</version></dependency>
+      <dependency><groupId>g</groupId><artifactId>b</artifactId><version>\${project.parent.version}</version></dependency>
+    </dependencies></project>`;
+  assert.deepEqual(parsePomDependencies(xml).slice(0, 2).map((d) => d.version), ["3.1", "7"]);
+});
+
+test("an inherited pin using ${project.version} resolves to the CHILD's version", () => {
+  const parent = `<project><groupId>p</groupId><artifactId>par</artifactId><version>1.0</version>
+    <dependencyManagement><dependencies><dependency><groupId>g</groupId><artifactId>a</artifactId><version>\${project.version}</version></dependency></dependencies></dependencyManagement></project>`;
+  const child = `<project><parent><groupId>p</groupId><artifactId>par</artifactId><version>1.0</version></parent>
+    <artifactId>kid</artifactId><version>2.0</version>
+    <dependencies><dependency><groupId>g</groupId><artifactId>a</artifactId></dependency></dependencies></project>`;
+  assert.equal(parsePomDependencies(child, parsePomContext(parent))[0].version, "2.0");
+});
+
+test("a managed dependency with <exclusions> before its <groupId> still pins its own coordinates", () => {
+  const parent = `<project><dependencyManagement><dependencies><dependency>
+    <exclusions><exclusion><groupId>other</groupId><artifactId>thing</artifactId></exclusion></exclusions>
+    <groupId>g</groupId><artifactId>a</artifactId><version>5.0</version>
+  </dependency></dependencies></dependencyManagement></project>`;
+  const child = `<project><dependencies><dependency><groupId>g</groupId><artifactId>a</artifactId></dependency></dependencies></project>`;
+  assert.equal(parsePomDependencies(child, parsePomContext(parent))[0].version, "5.0");
+});
+
+test("pomCoordinates takes the pom's own ids, falling back to the parent's groupId", () => {
+  const xml = `<project><parent><groupId>pg</groupId><artifactId>pa</artifactId><version>1</version></parent>
+    <artifactId>me</artifactId>
+    <dependencies><dependency><groupId>dep</groupId><artifactId>dep-a</artifactId></dependency></dependencies></project>`;
+  assert.deepEqual(pomCoordinates(xml), { groupId: "pg", artifactId: "me", version: undefined });
+});
+
+test("parsePomModules ignores modules declared inside profiles", () => {
+  const xml = `<project><profiles><profile><modules><module>p</module></modules></profile></profiles><modules><module>m</module></modules></project>`;
+  assert.deepEqual(parsePomModules(xml), ["m"]);
 });

@@ -1,36 +1,73 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { findJavaFiles } from "./scanner.js";
 import { parseJavaFile } from "./parser.js";
 import { ClassInfo, Dependency, RepoModel } from "./model.js";
 import {
   assessDependencies,
   parseGradleDependencies,
+  parentCoordinates,
   parentRelativePath,
   parsePomContext,
   parsePomDependencies,
   parsePomModules,
+  pomCoordinates,
   PomContext,
 } from "./depscan.js";
 
 const MAX_MODULE_DEPTH = 10;
 
-/** Collects a pom and, recursively, the poms of the modules it declares (kept inside rootPath). */
-function collectPoms(rootPath: string, pomPath: string, seen: Set<string>, depth: number): void {
-  if (seen.has(pomPath) || depth > MAX_MODULE_DEPTH || !existsSync(pomPath)) return;
-  seen.add(pomPath);
+/** True if p is rootPath or below it. Also correct across Windows drives, where relative() returns an absolute path. */
+function isInside(rootPath: string, p: string): boolean {
+  const rel = relative(rootPath, p);
+  return rel === "" || (rel !== ".." && !rel.startsWith(".." + sep) && !isAbsolute(rel));
+}
 
-  const xml = readFileSync(pomPath, "utf-8");
+function isFile(p: string): boolean {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Collects a pom and, recursively, the poms of the modules it declares (kept inside rootPath).
+ * A pom reached again by a shorter route is re-walked, so which modules are collected does not
+ * depend on the order they are listed in.
+ */
+function collectPoms(
+  rootPath: string,
+  pomPath: string,
+  seen: Map<string, number>,
+  depth: number
+): void {
+  const previous = seen.get(pomPath);
+  if ((previous !== undefined && previous <= depth) || depth > MAX_MODULE_DEPTH || !isFile(pomPath)) return;
+  seen.set(pomPath, depth);
+
+  let xml: string;
+  try {
+    xml = readFileSync(pomPath, "utf-8");
+  } catch {
+    return; // unreadable pom — skip it rather than fail the whole scan
+  }
   const moduleBase = resolve(pomPath, "..");
   for (const moduleName of parsePomModules(xml)) {
-    const modulePom = resolve(moduleBase, moduleName, "pom.xml");
-    const rel = relative(rootPath, modulePom);
-    if (rel.startsWith("..")) continue; // never follow a <module> out of the scanned repo
+    // A <module> may name a directory or the pom file itself (sub/pom.xml, sub/other-pom.xml).
+    const target = resolve(moduleBase, moduleName);
+    const modulePom = /\.xml$/i.test(moduleName) ? target : resolve(target, "pom.xml");
+    if (!isInside(rootPath, modulePom)) continue; // never follow a <module> out of the scanned repo
     collectPoms(rootPath, modulePom, seen, depth + 1);
   }
 }
 
-/** The parent pom a pom points at via <parent>/<relativePath>, if it is a readable pom inside the repo. */
+/**
+ * The parent pom a pom points at via <parent>/<relativePath>, if it is a readable pom inside the repo.
+ * Like Maven, a pom found at the relative path only counts if its groupId and artifactId are the ones
+ * the <parent> element declares; otherwise the real parent lives in a repository we cannot read (for
+ * example spring-boot-starter-parent next to an unrelated aggregator pom).
+ */
 function findParentPom(rootPath: string, pomPath: string, xml: string): string | null {
   const rel = parentRelativePath(xml);
   if (rel === null) return null;
@@ -40,10 +77,26 @@ function findParentPom(rootPath: string, pomPath: string, xml: string): string |
   } catch {
     return null;
   }
-  if (candidate === pomPath || relative(rootPath, candidate).startsWith("..") || !existsSync(candidate)) {
+  if (candidate === pomPath || !isInside(rootPath, candidate) || !isFile(candidate)) return null;
+
+  const declared = parentCoordinates(xml);
+  let actual: { groupId?: string; artifactId?: string };
+  try {
+    actual = pomCoordinates(readFileSync(candidate, "utf-8"));
+  } catch {
     return null;
   }
+  if (declared?.artifactId !== actual.artifactId || declared?.groupId !== actual.groupId) return null;
   return candidate;
+}
+
+/** Pom text, or "" if it cannot be read (an empty pom contributes nothing). */
+function readPom(pom: string): string {
+  try {
+    return readFileSync(pom, "utf-8");
+  } catch {
+    return "";
+  }
 }
 
 function loadDependencies(rootPath: string): { dependencies: Dependency[]; buildFiles: string[] } {
@@ -60,26 +113,41 @@ function loadDependencies(rootPath: string): { dependencies: Dependency[]; build
   };
 
   const rootPom = resolve(rootPath, "pom.xml");
-  if (existsSync(rootPom)) {
-    const poms = new Set<string>();
-    collectPoms(rootPath, rootPom, poms, 0);
+  if (isFile(rootPom)) {
+    const found = new Map<string, number>();
+    collectPoms(rootPath, rootPom, found, 0);
+    const poms = new Set(found.keys());
     // Maven inheritance follows each pom's <parent> (default ../pom.xml), not the <modules> list, so a
     // module can inherit from a sibling "parent" module. Only parents inside the scanned repo are read.
-    const contexts = new Map<string, { own: PomContext; inherited?: PomContext }>();
-    const contextOf = (pom: string, guard: Set<string>): { own: PomContext; inherited?: PomContext } => {
+    // A parent's own <dependencies> are inherited by its children, so parents reached this way are
+    // scanned too (the Set keeps growing while we iterate it).
+    for (const pom of poms) {
+      const parent = findParentPom(rootPath, pom, readPom(pom));
+      if (parent) poms.add(parent);
+    }
+
+    type Context = { own: PomContext; inherited?: PomContext; truncated: boolean };
+    const contexts = new Map<string, Context>();
+    const contextOf = (pom: string, guard: Set<string>): Context => {
       const known = contexts.get(pom);
       if (known) return known;
-      const xml = readFileSync(pom, "utf-8");
+      const xml = readPom(pom);
       let inherited: PomContext | undefined;
-      const parentPom = guard.has(pom) ? undefined : findParentPom(rootPath, pom, xml);
-      if (parentPom) inherited = contextOf(parentPom, new Set(guard).add(pom)).own;
-      const result = { own: parsePomContext(xml, inherited), inherited };
-      contexts.set(pom, result);
+      let truncated = guard.has(pom);
+      const parentPom = truncated ? null : findParentPom(rootPath, pom, xml);
+      if (parentPom) {
+        const parentContext = contextOf(parentPom, new Set(guard).add(pom));
+        inherited = parentContext.own;
+        truncated = parentContext.truncated;
+      }
+      const result = { own: parsePomContext(xml, inherited), inherited, truncated };
+      // A context cut short by a parent cycle depends on where the walk started, so it is not reusable.
+      if (!truncated) contexts.set(pom, result);
       return result;
     };
     for (const pom of poms) {
       buildFiles.push(relative(rootPath, pom).split(sep).join("/"));
-      addAll(parsePomDependencies(readFileSync(pom, "utf-8"), contextOf(pom, new Set()).inherited));
+      addAll(parsePomDependencies(readPom(pom), contextOf(pom, new Set()).inherited));
     }
     return { dependencies, buildFiles };
   }

@@ -83,3 +83,21 @@ test("a scan root that is itself named src still has its test directory scanned"
     rmSync(outer, { recursive: true, force: true });
   }
 });
+
+test("Java packages named src.test, target or build inside src/main are scanned; build output outside src is not", () => {
+  withTree(
+    [
+      "svc/src/main/java/src/test/Pkg.java",
+      "svc/src/main/java/com/acme/src/test/InPkg.java",
+      "svc/src/main/java/com/acme/target/Tgt.java",
+      "svc/target/generated-sources/Gen.java",
+    ],
+    (root) => {
+      assert.deepEqual(rel(root, findJavaFiles(root)), [
+        "svc/src/main/java/com/acme/src/test/InPkg.java",
+        "svc/src/main/java/com/acme/target/Tgt.java",
+        "svc/src/main/java/src/test/Pkg.java",
+      ]);
+    }
+  );
+});

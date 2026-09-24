@@ -2,11 +2,11 @@ import { lstatSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
 
 // Never source, anywhere in the tree.
-const ALWAYS_EXCLUDED_DIRS = new Set(["target", "node_modules", ".git"]);
+const ALWAYS_EXCLUDED_DIRS = new Set(["node_modules", ".git"]);
 
 // Build-output names at a project root, but also legitimate Java package
-// names (com.acme.build, com.acme.out) once we are inside a src/ tree.
-const BUILD_OUTPUT_DIRS = new Set(["build", "out", "bin"]);
+// names (com.acme.build, com.acme.target) once we are inside a src/ tree.
+const BUILD_OUTPUT_DIRS = new Set(["target", "build", "out", "bin"]);
 
 /**
  * Recursively finds all .java files under rootPath, skipping build output
@@ -16,7 +16,7 @@ const BUILD_OUTPUT_DIRS = new Set(["build", "out", "bin"]);
 export function findJavaFiles(rootPath: string): string[] {
   const results: string[] = [];
 
-  function walk(dir: string, insideSrc: boolean): void {
+  function walk(dir: string, srcDepth: number): void {
     let entries: string[];
     try {
       entries = readdirSync(dir).sort();
@@ -38,17 +38,17 @@ export function findJavaFiles(rootPath: string): string[] {
 
       if (stat.isDirectory()) {
         // Maven/Gradle test sources (src/test): test-only @Configuration/@Component classes
-        // are not part of the application's architecture. A package named "test" deeper in
-        // src/main is still scanned.
-        if (entry === "test" && dir !== rootPath && basename(dir) === "src") continue;
-        if (!insideSrc && BUILD_OUTPUT_DIRS.has(entry)) continue;
-        walk(fullPath, insideSrc || entry === "src");
+        // are not part of the application's architecture. Only the outermost src counts, so a
+        // package named src.test (or a package named test) inside src/main is still scanned.
+        if (entry === "test" && dir !== rootPath && basename(dir) === "src" && srcDepth === 1) continue;
+        if (srcDepth === 0 && BUILD_OUTPUT_DIRS.has(entry)) continue;
+        walk(fullPath, srcDepth + (entry === "src" ? 1 : 0));
       } else if (stat.isFile() && entry.endsWith(".java")) {
         results.push(fullPath);
       }
     }
   }
 
-  walk(rootPath, false);
+  walk(rootPath, 0);
   return results;
 }

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildRepoModel } from "./build.js";
+import { assessDependencies, parsePomDependencies } from "./depscan.js";
 
 const fixturePath = resolve(
   fileURLToPath(new URL(".", import.meta.url)),
@@ -92,7 +93,7 @@ test("multi-module: a version pinned in the root pom's dependencyManagement appl
   try {
     writeFileSync(
       join(root, "pom.xml"),
-      `<project><modules><module>api</module></modules>
+      `<project><groupId>x</groupId><artifactId>root</artifactId><modules><module>api</module></modules>
        <properties><log4j.version>2.14.1</log4j.version></properties>
        <dependencyManagement><dependencies><dependency>
          <groupId>org.apache.logging.log4j</groupId><artifactId>log4j-core</artifactId><version>\${log4j.version}</version>
@@ -118,12 +119,13 @@ test("multi-module: a version pinned in the root pom's dependencyManagement appl
 test("multi-module: a module inherits from a sibling parent module named by <relativePath>, not from the aggregator", () => {
   const root = mkdtempSync(join(tmpdir(), "springlens-mm2-"));
   try {
-    writeFileSync(join(root, "pom.xml"), `<project><modules><module>parent</module><module>app</module></modules></project>`);
+    writeFileSync(join(root, "pom.xml"), `<project><groupId>x</groupId><artifactId>aggr</artifactId><modules><module>parent</module><module>app</module></modules>
+      <dependencyManagement><dependencies><dependency><groupId>org.apache.logging.log4j</groupId><artifactId>log4j-core</artifactId><version>2.20.0</version></dependency></dependencies></dependencyManagement></project>`);
     mkdirSync(join(root, "parent"));
     mkdirSync(join(root, "app"));
     writeFileSync(
       join(root, "parent", "pom.xml"),
-      `<project><dependencyManagement><dependencies><dependency>
+      `<project><groupId>x</groupId><artifactId>parent</artifactId><dependencyManagement><dependencies><dependency>
          <groupId>org.apache.logging.log4j</groupId><artifactId>log4j-core</artifactId><version>2.14.1</version>
        </dependency></dependencies></dependencyManagement></project>`
     );
@@ -147,7 +149,7 @@ test("multi-module: a child that overrides the version property changes the inhe
   try {
     writeFileSync(
       join(root, "pom.xml"),
-      `<project><modules><module>app</module></modules>
+      `<project><groupId>x</groupId><artifactId>root</artifactId><modules><module>app</module></modules>
        <properties><log4j.version>2.14.1</log4j.version></properties>
        <dependencyManagement><dependencies><dependency>
          <groupId>org.apache.logging.log4j</groupId><artifactId>log4j-core</artifactId><version>\${log4j.version}</version>
@@ -170,27 +172,166 @@ test("multi-module: a child that overrides the version property changes the inhe
   }
 });
 
-test("multi-module: a module with no <parent> inherits nothing, and a parent pointing outside the repo is ignored", () => {
-  const root = mkdtempSync(join(tmpdir(), "springlens-mm4-"));
+
+const LOG4J = "<groupId>org.apache.logging.log4j</groupId><artifactId>log4j-core</artifactId>";
+
+function withRepo(fn: (root: string, write: (rel: string, content: string) => void) => void): void {
+  const root = mkdtempSync(join(tmpdir(), "springlens-mmx-"));
   try {
-    writeFileSync(
-      join(root, "pom.xml"),
-      `<project><modules><module>a</module><module>b</module></modules>
-       <dependencyManagement><dependencies><dependency>
-         <groupId>g</groupId><artifactId>lib</artifactId><version>1.0</version>
-       </dependency></dependencies></dependencyManagement></project>`
-    );
-    mkdirSync(join(root, "a"));
-    mkdirSync(join(root, "b"));
-    writeFileSync(join(root, "a", "pom.xml"), `<project><dependencies><dependency><groupId>g</groupId><artifactId>lib</artifactId></dependency></dependencies></project>`);
-    writeFileSync(
-      join(root, "b", "pom.xml"),
-      `<project><parent><relativePath>../../elsewhere/pom.xml</relativePath></parent>
-       <dependencies><dependency><groupId>g</groupId><artifactId>lib</artifactId></dependency></dependencies></project>`
-    );
-    const libs = buildRepoModel(root).dependencies.filter((d) => d.artifactId === "lib");
-    assert.deepEqual(libs.map((d) => d.version), [null]);
+    fn(root, (rel, content) => {
+      mkdirSync(join(root, rel, ".."), { recursive: true });
+      writeFileSync(join(root, rel), content);
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+test("multi-module: a parent found at ../pom.xml whose coordinates differ from <parent> is not inherited from", () => {
+  withRepo((root, write) => {
+    write("pom.xml", `<project><groupId>x</groupId><artifactId>aggregator</artifactId><modules><module>m</module></modules>
+      <dependencyManagement><dependencies><dependency>${LOG4J}<version>2.14.0</version></dependency></dependencies></dependencyManagement></project>`);
+    write("m/pom.xml", `<project><parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId><version>3.3.0</version></parent>
+      <dependencies><dependency>${LOG4J}</dependency></dependencies></project>`);
+    const model = buildRepoModel(root);
+    assert.equal(model.dependencies.find((d) => d.artifactId === "log4j-core")?.version, null);
+    assert.equal(model.riskFindings.filter((f) => f.dependency.artifactId === "log4j-core").length, 0);
+  });
+});
+
+test("multi-module: a parent reached only through <relativePath> contributes its own <dependencies> too", () => {
+  withRepo((root, write) => {
+    write("pom.xml", `<project><modules><module>m</module></modules></project>`);
+    write("par/pom.xml", `<project><groupId>x</groupId><artifactId>par</artifactId>
+      <dependencies><dependency>${LOG4J}<version>2.14.0</version></dependency></dependencies></project>`);
+    write("m/pom.xml", `<project><parent><groupId>x</groupId><artifactId>par</artifactId><version>1</version>
+      <relativePath>../par/pom.xml</relativePath></parent></project>`);
+    const model = buildRepoModel(root);
+    assert.equal(model.riskFindings.find((f) => f.dependency.artifactId === "log4j-core")?.severity, "critical");
+    assert.ok(model.buildFiles.includes("par/pom.xml"));
+  });
+});
+
+test("multi-module: <modules> inside a <profile> are not followed, the project's own are", () => {
+  withRepo((root, write) => {
+    write("pom.xml", `<project><profiles><profile><modules><module>p</module></modules></profile></profiles>
+      <modules><module>m</module></modules></project>`);
+    write("p/pom.xml", `<project><dependencies><dependency><groupId>g</groupId><artifactId>from-profile</artifactId><version>1</version></dependency></dependencies></project>`);
+    write("m/pom.xml", `<project><dependencies><dependency><groupId>g</groupId><artifactId>from-module</artifactId><version>1</version></dependency></dependencies></project>`);
+    const names = buildRepoModel(root).dependencies.map((d) => d.artifactId);
+    assert.deepEqual(names, ["from-module"]);
+  });
+});
+
+test("multi-module: parent cycles and a self-parent terminate, and the result does not depend on module order", () => {
+  const layout = (order: string[]) => {
+    let versions: string[] = [];
+    withRepo((root, write) => {
+      write("pom.xml", `<project><modules>${order.map((m) => `<module>${m}</module>`).join("")}</modules></project>`);
+      write("a/pom.xml", `<project><groupId>x</groupId><artifactId>a</artifactId>
+        <parent><groupId>x</groupId><artifactId>b</artifactId><version>1</version><relativePath>../b/pom.xml</relativePath></parent>
+        <dependencies><dependency>${LOG4J}</dependency></dependencies></project>`);
+      write("b/pom.xml", `<project><groupId>x</groupId><artifactId>b</artifactId>
+        <parent><groupId>x</groupId><artifactId>a</artifactId><version>1</version><relativePath>../a/pom.xml</relativePath></parent>
+        <dependencyManagement><dependencies><dependency>${LOG4J}<version>2.14.0</version></dependency></dependencies></dependencyManagement></project>`);
+      write("s/pom.xml", `<project><groupId>x</groupId><artifactId>s</artifactId>
+        <parent><groupId>x</groupId><artifactId>s</artifactId><version>1</version><relativePath>pom.xml</relativePath></parent></project>`);
+      versions = buildRepoModel(root).dependencies.map((d) => String(d.version)).sort();
+    });
+    return versions;
+  };
+  assert.deepEqual(layout(["a", "b", "s"]), layout(["s", "b", "a"]));
+});
+
+test("multi-module: modules nest to MAX_MODULE_DEPTH (10) and no further", () => {
+  withRepo((root, write) => {
+    let dir = "";
+    for (let level = 0; level <= 12; level++) {
+      const next = `m${level + 1}`;
+      write(`${dir}pom.xml`, `<project><modules><module>${next}</module></modules>
+        <dependencies><dependency><groupId>g</groupId><artifactId>level-${level}</artifactId><version>1</version></dependency></dependencies></project>`);
+      dir += `${next}/`;
+    }
+    const names = buildRepoModel(root).dependencies.map((d) => d.artifactId);
+    assert.ok(names.includes("level-10"));
+    assert.ok(!names.includes("level-11"));
+  });
+});
+
+test("multi-module: a module directory whose name starts with two dots is still inside the repo", () => {
+  withRepo((root, write) => {
+    write("pom.xml", `<project><modules><module>..foo</module></modules></project>`);
+    write("..foo/pom.xml", `<project><dependencies><dependency><groupId>g</groupId><artifactId>dotted</artifactId><version>1</version></dependency></dependencies></project>`);
+    assert.deepEqual(buildRepoModel(root).dependencies.map((d) => d.artifactId), ["dotted"]);
+  });
+});
+
+test("multi-module: a <parent> pointing at a real pom outside the repo is ignored (tests the guard, not a missing file)", () => {
+  const outer = mkdtempSync(join(tmpdir(), "springlens-outer-"));
+  try {
+    const repo = join(outer, "repo");
+    mkdirSync(join(outer, "elsewhere"));
+    mkdirSync(join(repo, "b"), { recursive: true });
+    writeFileSync(
+      join(outer, "elsewhere", "pom.xml"),
+      `<project><groupId>x</groupId><artifactId>elsewhere</artifactId>
+       <dependencyManagement><dependencies><dependency><groupId>g</groupId><artifactId>lib2</artifactId><version>1.0</version></dependency></dependencies></dependencyManagement></project>`
+    );
+    writeFileSync(join(repo, "pom.xml"), `<project><modules><module>b</module></modules></project>`);
+    writeFileSync(
+      join(repo, "b", "pom.xml"),
+      `<project><parent><groupId>x</groupId><artifactId>elsewhere</artifactId><version>1</version><relativePath>../../elsewhere/pom.xml</relativePath></parent>
+       <dependencies><dependency><groupId>g</groupId><artifactId>lib2</artifactId></dependency></dependencies></project>`
+    );
+    assert.equal(buildRepoModel(repo).dependencies.find((d) => d.artifactId === "lib2")?.version, null);
+  } finally {
+    rmSync(outer, { recursive: true, force: true });
+  }
+});
+
+test("multi-module: a module reachable by a short and a long path is scanned whichever is listed first", () => {
+  const scan = (order: string[]) => {
+    let names: string[] = [];
+    withRepo((root, write) => {
+      write("pom.xml", `<project><modules>${order.map((m) => `<module>${m}</module>`).join("")}</modules></project>`);
+      for (let i = 1; i <= 9; i++) {
+        write(`c${i}/pom.xml`, `<project><modules><module>${i < 9 ? `../c${i + 1}` : "../x"}</module></modules></project>`);
+      }
+      write("x/pom.xml", `<project><modules><module>../y</module></modules></project>`);
+      write("y/pom.xml", `<project><dependencies><dependency>${LOG4J}<version>2.14.0</version></dependency></dependencies></project>`);
+      names = buildRepoModel(root).riskFindings.map((f) => f.dependency.artifactId);
+    });
+    return names;
+  };
+  assert.deepEqual(scan(["c1", "x"]), ["log4j-core"]);
+  assert.deepEqual(scan(["x", "c1"]), ["log4j-core"]);
+});
+
+test("multi-module: <module> may name a pom file, and a directory called pom.xml does not crash the scan", () => {
+  withRepo((root, write) => {
+    write("pom.xml", `<project><modules><module>sub/pom-lib.xml</module><module>weird</module></modules></project>`);
+    write("sub/pom-lib.xml", `<project><dependencies><dependency><groupId>g</groupId><artifactId>named-file</artifactId><version>1</version></dependency></dependencies></project>`);
+    write("weird/pom.xml/keep.txt", "not a pom");
+    assert.deepEqual(buildRepoModel(root).dependencies.map((d) => d.artifactId), ["named-file"]);
+  });
+});
+
+test("a </build> inside CDATA does not end <build> stripping early, and <reporting> plugin dependencies are ignored", () => {
+  const xml = `<project>
+    <build><plugins><plugin><configuration><![CDATA[ </build> ]]></configuration>
+      <dependencies><dependency>${LOG4J}<version>2.14.0</version></dependency></dependencies></plugin></plugins></build>
+    <reporting><plugins><plugin><dependencies><dependency><groupId>g</groupId><artifactId>report-only</artifactId><version>1</version></dependency></dependencies></plugin></plugins></reporting>
+    <dependencies><dependency><groupId>g</groupId><artifactId>real</artifactId><version>1</version></dependency></dependencies>
+  </project>`;
+  assert.deepEqual(parsePomDependencies(xml).map((d) => d.artifactId), ["real"]);
+});
+
+test("a dependency with <exclusions> before its <groupId> is not mistaken for the excluded artifact (no false log4j finding)", () => {
+  const xml = `<project><dependencies><dependency>
+    <exclusions><exclusion>${LOG4J}</exclusion></exclusions>
+    <groupId>org.foo</groupId><artifactId>foo</artifactId><version>1.0</version>
+  </dependency></dependencies></project>`;
+  const deps = parsePomDependencies(xml);
+  assert.deepEqual(deps.map((d) => `${d.artifactId}:${d.version}`), ["foo:1.0"]);
+  assert.equal(assessDependencies(deps).length, 0);
 });
