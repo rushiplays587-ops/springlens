@@ -2,6 +2,24 @@
   "name": "springlens",
   "version": "0.1.0",
   "description": "AI-powered onboarding and dependency-risk analysis for legacy Java/Spring Boot codebases.",
+  "keywords": [
+    "spring",
+    "spring-boot",
+    "java",
+    "onboarding",
+    "architecture",
+    "dependency-risk",
+    "static-analysis",
+    "cli"
+  ],
+  "homepage": "https://github.com/rushiplays587-ops/springlens#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rushiplays587-ops/springlens.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rushiplays587-ops/springlens/issues"
+  },
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -9,7 +27,9 @@
   },
   "main": "./dist/cli.js",
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.test.js",
+    "!dist/**/*.map"
   ],
   "scripts": {
     "build": "tsc",
