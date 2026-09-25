@@ -1,13 +1,62 @@
 # SpringLens
 
-Onboarding and dependency-risk analysis for legacy **Java/Spring Boot**
-codebases — built by a practicing Java tech lead, for teams inheriting Spring
-Boot systems they didn't write.
+**Point it at a Java/Spring Boot repo you just inherited; get an architecture map, dependency-risk flags and config summary in one report. Runs locally, no AI needed.**
 
-Generic AI code-onboarding tools (Swimm, DeepWiki, Glean, and others) are
-language-agnostic. SpringLens is built for one stack: it reads Spring's own
-vocabulary — stereotype annotations, endpoint mappings, bean wiring — and
-writes an architecture map of the codebase you just inherited.
+```bash
+git clone https://github.com/rushiplays587-ops/springlens.git
+cd springlens && npm install && npm run build
+node dist/cli.js ./path-to-spring-boot-repo     # writes springlens-report.md into that repo
+```
+
+Built by a practicing Java tech lead, for teams inheriting Spring Boot systems
+they didn't write. Generic AI code-onboarding tools (Swimm, DeepWiki, Glean,
+and others) are language-agnostic; SpringLens is built for one stack. It reads
+Spring's own vocabulary — stereotype annotations, endpoint mappings, bean
+wiring — instead of guessing.
+
+> **Unofficial.** SpringLens is an independent open-source project. It is not
+> affiliated with, or endorsed by, the Spring project or Broadcom. "Spring" is a
+> trademark of its owner.
+
+## Install
+
+- **From source** (works today): the three commands above. Needs Node 18+.
+- **From npm**: not published yet. Once it is, it will be
+  `npm install -g springlens` (or `npx springlens <repo>`).
+
+## Example
+
+Real output from the bundled sample shop app (`test-fixture-large/`, 18 classes).
+Report excerpt:
+
+```markdown
+## Dependency risk
+- 🔴 critical `org.apache.logging.log4j:log4j-core` — log4j-core 2.14.1 is older than 2.17.1 ...
+- 🟡 advisory `org.springframework.boot:spring-boot-starter-parent` — Spring Boot 2.7.18 is a 2.x release ...
+
+## Controllers (3)
+### AuthController
+src/main/java/com/shop/web/AuthController.java — @RestController @RequestMapping
+Endpoints:
+- POST /auth/login → login()
+- POST /auth/logout → logout()
+Depends on: AuthService
+```
+
+And `ask`, which is local keyword search (no AI unless you pass `--ai`):
+
+```text
+$ springlens ask test-fixture-large "where is user login handled"
+1. AuthController (controller) — src/main/java/com/shop/web/AuthController.java
+   Endpoints: POST /auth/login -> login(), POST /auth/logout -> logout()
+   Depends on: AuthService
+   Matched: login
+2. AuthService (service) — src/main/java/com/shop/service/AuthService.java
+   Depends on: UserRepository, TokenStore
+   Used by: AuthController
+   Matched: user, login
+...
+```
 
 ## What it does today (v0.1)
 
@@ -49,8 +98,7 @@ two rules above, and evaluation of Spring profiles. See the [Roadmap](#roadmap).
 ## Usage
 
 ```bash
-npm install
-npm run build
+# from a source checkout (after npm install && npm run build):
 
 # local structural report — nothing leaves your machine:
 npm start -- ./path-to-your-spring-boot-repo
