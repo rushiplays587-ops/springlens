@@ -79,7 +79,7 @@ export async function narrateClass(
     return textBlock && textBlock.type === "text" ? textBlock.text.trim() : null;
   } catch (err) {
     console.warn(
-      `SpringLens: AI narrative failed for ${cls.name} (${(err as Error).message}) — continuing without it.`
+      `Beanlens: AI narrative failed for ${cls.name} (${(err as Error).message}) — continuing without it.`
     );
     return null;
   }
@@ -202,7 +202,7 @@ export async function answerQuestion(
     const textBlock = response.content.find((block) => block.type === "text");
     return textBlock && textBlock.type === "text" ? textBlock.text.trim() : null;
   } catch (err) {
-    console.warn(`SpringLens: AI answer failed (${(err as Error).message}) — showing local results only.`);
+    console.warn(`Beanlens: AI answer failed (${(err as Error).message}) — showing local results only.`);
     return null;
   }
 }

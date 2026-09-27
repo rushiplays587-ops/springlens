@@ -6,7 +6,7 @@ import { join, relative } from "node:path";
 import { findJavaFiles } from "./scanner.js";
 
 function withTree(files: string[], fn: (root: string) => void): void {
-  const root = mkdtempSync(join(tmpdir(), "springlens-scan-"));
+  const root = mkdtempSync(join(tmpdir(), "beanlens-scan-"));
   try {
     for (const f of files) {
       const full = join(root, f);
@@ -73,7 +73,7 @@ test("skips src/test (test-only Spring classes) but scans a package named test i
 });
 
 test("a scan root that is itself named src still has its test directory scanned", () => {
-  const outer = mkdtempSync(join(tmpdir(), "springlens-srcroot-"));
+  const outer = mkdtempSync(join(tmpdir(), "beanlens-srcroot-"));
   try {
     const root = join(outer, "src");
     mkdirSync(join(root, "test"), { recursive: true });

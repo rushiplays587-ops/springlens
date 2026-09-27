@@ -1,5 +1,5 @@
 {
-  "name": "springlens",
+  "name": "beanlens",
   "version": "0.1.0",
   "description": "AI-powered onboarding and dependency-risk analysis for legacy Java/Spring Boot codebases.",
   "keywords": [
@@ -23,7 +23,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "springlens": "./dist/cli.js"
+    "beanlens": "./dist/cli.js"
   },
   "main": "./dist/cli.js",
   "files": [

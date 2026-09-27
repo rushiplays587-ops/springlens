@@ -121,7 +121,7 @@ test("HTML report: the page is well-formed enough that every opened tag is close
 
 test("HTML report: has a title from the scanned directory name, escaped, and is printable and responsive", () => {
   const html = renderHtmlReport(hostileModel());
-  assert.match(html, /<title>SpringLens — [^<]*&lt;script&gt;/);
+  assert.match(html, /<title>Beanlens — [^<]*&lt;script&gt;/);
   assert.ok(html.includes("@media print"));
   assert.ok(html.includes("width=device-width"));
   assert.ok(html.includes("prefers-color-scheme"));

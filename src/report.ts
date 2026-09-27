@@ -149,7 +149,7 @@ function documentBlocks(doc: ConfigDocument, heading: Span[] | null): Block[] {
     }
   }
   if (doc.truncated) {
-    blocks.push({ t: "note", text: ["This file was larger or deeper than SpringLens reads; the rest was ignored."] });
+    blocks.push({ t: "note", text: ["This file was larger or deeper than Beanlens reads; the rest was ignored."] });
   }
   return blocks;
 }
@@ -230,7 +230,7 @@ function configurationBlocks(model: RepoModel): Block[] {
 /** The whole report as format-neutral blocks; the Markdown and HTML outputs are both rendered from this. */
 export function buildReportBlocks(model: RepoModel): Block[] {
   const blocks: Block[] = [
-    { t: "h", level: 1, text: ["SpringLens architecture map"] },
+    { t: "h", level: 1, text: ["Beanlens architecture map"] },
     { t: "p", text: ["Scanned: ", { code: basename(model.rootPath) }] },
     { t: "p", text: [`Classes found: ${model.classes.length}`] },
     ...dependencyRiskBlocks(model),
@@ -242,7 +242,7 @@ export function buildReportBlocks(model: RepoModel): Block[] {
       t: "p",
       text: [
         "No Spring-annotated classes found. Is this a Spring Boot project, and " +
-          "did you point SpringLens at the right directory (e.g. the module " +
+          "did you point Beanlens at the right directory (e.g. the module " +
           "containing `src/main/java`)?",
       ],
     });
@@ -270,5 +270,5 @@ export function renderMarkdownReport(model: RepoModel): string {
 
 /** The same report as one self-contained HTML page (inline CSS, no scripts, no external requests). */
 export function renderHtmlReport(model: RepoModel): string {
-  return renderHtml(`SpringLens — ${basename(model.rootPath)}`, buildReportBlocks(model));
+  return renderHtml(`Beanlens — ${basename(model.rootPath)}`, buildReportBlocks(model));
 }

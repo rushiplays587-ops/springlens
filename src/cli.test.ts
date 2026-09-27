@@ -59,7 +59,7 @@ test("ask rejects unknown flags", () => {
 
 test("--help shows the ask command and its privacy behavior", () => {
   const r = run(["ask", "--help"]);
-  assert.ok(r.out.includes("springlens ask"));
+  assert.ok(r.out.includes("beanlens ask"));
   assert.ok(r.out.includes("string literals"));
 });
 
@@ -102,7 +102,7 @@ const FAKES = [
 ];
 
 function withFixtureCopy(fn: (dir: string) => void): void {
-  const dir = mkdtempSync(join(tmpdir(), "springlens-cli-"));
+  const dir = mkdtempSync(join(tmpdir(), "beanlens-cli-"));
   try {
     cpSync(fixture, dir, { recursive: true });
     fn(dir);
@@ -111,13 +111,13 @@ function withFixtureCopy(fn: (dir: string) => void): void {
   }
 }
 
-test("--html writes a self-contained springlens-report.html next to the markdown report, with no fake secret in either", () => {
+test("--html writes a self-contained beanlens-report.html next to the markdown report, with no fake secret in either", () => {
   withFixtureCopy((dir) => {
     const r = run([dir, "--html"]);
     assert.equal(r.code, 0, r.err);
-    assert.ok(existsSync(join(dir, "springlens-report.md")));
-    const html = readFileSync(join(dir, "springlens-report.html"), "utf-8");
-    const md = readFileSync(join(dir, "springlens-report.md"), "utf-8");
+    assert.ok(existsSync(join(dir, "beanlens-report.md")));
+    const html = readFileSync(join(dir, "beanlens-report.html"), "utf-8");
+    const md = readFileSync(join(dir, "beanlens-report.md"), "utf-8");
     assert.ok(html.startsWith("<!doctype html>"));
     assert.ok(!/<script/i.test(html));
     assert.ok(html.includes("Gateway routing") || html.includes("Configuration files"));
@@ -133,7 +133,7 @@ test("--html writes a self-contained springlens-report.html next to the markdown
 test("without --html no HTML file is written", () => {
   withFixtureCopy((dir) => {
     assert.equal(run([dir]).code, 0);
-    assert.ok(!existsSync(join(dir, "springlens-report.html")));
+    assert.ok(!existsSync(join(dir, "beanlens-report.html")));
   });
 });
 
@@ -157,7 +157,7 @@ test("an unparsable config file does not stop the report", () => {
     writeFileSync(join(dir, "src", "main", "resources", "application-broken.yml"), "a: [1, 2\n");
     const r = run([dir]);
     assert.equal(r.code, 0, r.err);
-    const md = readFileSync(join(dir, "springlens-report.md"), "utf-8");
+    const md = readFileSync(join(dir, "beanlens-report.md"), "utf-8");
     assert.ok(md.includes("application-broken.yml"));
     assert.ok(md.includes("Could not be fully read"));
   });

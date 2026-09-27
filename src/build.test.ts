@@ -89,7 +89,7 @@ test("scans the fixture's pom.xml and flags its planted risky dependencies", () 
 });
 
 test("multi-module: a version pinned in the root pom's dependencyManagement applies to a module's versionless dependency", () => {
-  const root = mkdtempSync(join(tmpdir(), "springlens-mm-"));
+  const root = mkdtempSync(join(tmpdir(), "beanlens-mm-"));
   try {
     writeFileSync(
       join(root, "pom.xml"),
@@ -117,7 +117,7 @@ test("multi-module: a version pinned in the root pom's dependencyManagement appl
 });
 
 test("multi-module: a module inherits from a sibling parent module named by <relativePath>, not from the aggregator", () => {
-  const root = mkdtempSync(join(tmpdir(), "springlens-mm2-"));
+  const root = mkdtempSync(join(tmpdir(), "beanlens-mm2-"));
   try {
     writeFileSync(join(root, "pom.xml"), `<project><groupId>x</groupId><artifactId>aggr</artifactId><modules><module>parent</module><module>app</module></modules>
       <dependencyManagement><dependencies><dependency><groupId>org.apache.logging.log4j</groupId><artifactId>log4j-core</artifactId><version>2.20.0</version></dependency></dependencies></dependencyManagement></project>`);
@@ -145,7 +145,7 @@ test("multi-module: a module inherits from a sibling parent module named by <rel
 });
 
 test("multi-module: a child that overrides the version property changes the inherited pin (2.17.2 is safe)", () => {
-  const root = mkdtempSync(join(tmpdir(), "springlens-mm3-"));
+  const root = mkdtempSync(join(tmpdir(), "beanlens-mm3-"));
   try {
     writeFileSync(
       join(root, "pom.xml"),
@@ -176,7 +176,7 @@ test("multi-module: a child that overrides the version property changes the inhe
 const LOG4J = "<groupId>org.apache.logging.log4j</groupId><artifactId>log4j-core</artifactId>";
 
 function withRepo(fn: (root: string, write: (rel: string, content: string) => void) => void): void {
-  const root = mkdtempSync(join(tmpdir(), "springlens-mmx-"));
+  const root = mkdtempSync(join(tmpdir(), "beanlens-mmx-"));
   try {
     fn(root, (rel, content) => {
       mkdirSync(join(root, rel, ".."), { recursive: true });
@@ -267,7 +267,7 @@ test("multi-module: a module directory whose name starts with two dots is still 
 });
 
 test("multi-module: a <parent> pointing at a real pom outside the repo is ignored (tests the guard, not a missing file)", () => {
-  const outer = mkdtempSync(join(tmpdir(), "springlens-outer-"));
+  const outer = mkdtempSync(join(tmpdir(), "beanlens-outer-"));
   try {
     const repo = join(outer, "repo");
     mkdirSync(join(outer, "elsewhere"));

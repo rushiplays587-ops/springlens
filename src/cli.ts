@@ -23,24 +23,24 @@ const VERSION = "0.1.0";
 const KNOWN_FLAGS = new Set(["--ai", "--no-ai", "--html", "--help", "-h"]);
 
 function printUsage(): void {
-  console.log(`SpringLens v${VERSION}
+  console.log(`Beanlens v${VERSION}
 Onboarding and dependency-risk analysis for Java/Spring Boot codebases.
 
 Usage:
-  springlens <path-to-repo> [--ai] [--html]
-  springlens ask <path-to-repo> "<question>" [--ai]
-  springlens ask <path-to-repo> [--ai] -- "-Xmx flag"   (a question starting with "-")
+  beanlens <path-to-repo> [--ai] [--html]
+  beanlens ask <path-to-repo> "<question>" [--ai]
+  beanlens ask <path-to-repo> [--ai] -- "-Xmx flag"   (a question starting with "-")
 
 Examples:
-  springlens ./my-legacy-service
-  springlens ask ./my-legacy-service "where is user login handled"
+  beanlens ./my-legacy-service
+  beanlens ask ./my-legacy-service "where is user login handled"
 
 (To scan a directory literally named "ask", write ./ask.)
 
-By default SpringLens runs entirely locally and writes a structural report
-(springlens-report.md inside the repo). Nothing leaves your machine.
+By default Beanlens runs entirely locally and writes a structural report
+(beanlens-report.md inside the repo). Nothing leaves your machine.
 
---html also write springlens-report.html: the same report as one self-contained page
+--html also write beanlens-report.html: the same report as one self-contained page
        (inline styles, no scripts, no external requests). Nothing extra is sent anywhere.
 
 --ai   also generate a plain-English explanation per class using the Anthropic
@@ -69,12 +69,12 @@ function isSymbolicLink(path: string): boolean {
 function checkRepoDir(target: string): string | null {
   const repoPath = resolve(target);
   if (!existsSync(repoPath)) {
-    console.error(`SpringLens: path not found — ${repoPath}`);
+    console.error(`Beanlens: path not found — ${repoPath}`);
     process.exitCode = 1;
     return null;
   }
   if (!statSync(repoPath).isDirectory()) {
-    console.error(`SpringLens: ${repoPath} is a file — point SpringLens at the repo's directory.`);
+    console.error(`Beanlens: ${repoPath} is a file — point Beanlens at the repo's directory.`);
     process.exitCode = 1;
     return null;
   }
@@ -85,12 +85,12 @@ async function runAsk(positional: string[], wantsAi: boolean): Promise<void> {
   const [, target, ...questionWords] = positional;
   const question = questionWords.join(" ").trim();
   if (!target || !question) {
-    console.error('SpringLens: usage — springlens ask <path-to-repo> "<question>" [--ai]');
+    console.error('Beanlens: usage — beanlens ask <path-to-repo> "<question>" [--ai]');
     process.exitCode = 2;
     return;
   }
   if (question.length > MAX_QUESTION_CHARS) {
-    console.error(`SpringLens: question is ${question.length} characters; the limit is ${MAX_QUESTION_CHARS}.`);
+    console.error(`Beanlens: question is ${question.length} characters; the limit is ${MAX_QUESTION_CHARS}.`);
     process.exitCode = 2;
     return;
   }
@@ -141,12 +141,12 @@ async function main(argv: string[]): Promise<void> {
   const flags = optionArgs.filter(isOption);
   const unknown = flags.filter((f) => !KNOWN_FLAGS.has(f));
   if (unknown.length > 0) {
-    console.error(`SpringLens: unknown option ${unknown.join(", ")}. Run with --help for usage.`);
+    console.error(`Beanlens: unknown option ${unknown.join(", ")}. Run with --help for usage.`);
     process.exitCode = 2;
     return;
   }
   if (flags.includes("--ai") && flags.includes("--no-ai")) {
-    console.error("SpringLens: --ai and --no-ai contradict each other; pass only one.");
+    console.error("Beanlens: --ai and --no-ai contradict each other; pass only one.");
     process.exitCode = 2;
     return;
   }
@@ -166,12 +166,12 @@ async function main(argv: string[]): Promise<void> {
   const repoPath = checkRepoDir(target);
   if (!repoPath) return;
 
-  const outputPath = resolve(repoPath, "springlens-report.md");
-  const htmlPath = resolve(repoPath, "springlens-report.html");
+  const outputPath = resolve(repoPath, "beanlens-report.md");
+  const htmlPath = resolve(repoPath, "beanlens-report.html");
   const wantsHtml = flags.includes("--html");
   for (const path of wantsHtml ? [outputPath, htmlPath] : [outputPath]) {
     if (isSymbolicLink(path)) {
-      console.error(`SpringLens: refusing to write ${path} because it is a symbolic link. Remove it and re-run.`);
+      console.error(`Beanlens: refusing to write ${path} because it is a symbolic link. Remove it and re-run.`);
       process.exitCode = 1;
       return;
     }
@@ -184,11 +184,11 @@ async function main(argv: string[]): Promise<void> {
 
   if (!looksLikeMavenOrGradle) {
     console.warn(
-      `SpringLens: no pom.xml or build.gradle found at ${repoPath} — this may not be a Maven/Gradle Spring Boot project.`
+      `Beanlens: no pom.xml or build.gradle found at ${repoPath} — this may not be a Maven/Gradle Spring Boot project.`
     );
   }
 
-  console.log(`SpringLens v${VERSION}`);
+  console.log(`Beanlens v${VERSION}`);
   console.log(`Scanning: ${repoPath}`);
 
   const model = buildRepoModel(repoPath);
@@ -222,10 +222,10 @@ async function main(argv: string[]): Promise<void> {
 
   console.log(`Report written to: ${outputPath}`);
   if (wantsHtml) console.log(`HTML report written to: ${htmlPath}`);
-  console.log(`Ask a question about the codebase: springlens ask ${JSON.stringify(target)} "<question>"`);
+  console.log(`Ask a question about the codebase: beanlens ask ${JSON.stringify(target)} "<question>"`);
 }
 
 main(process.argv.slice(2)).catch((err) => {
-  console.error(`SpringLens: unexpected error — ${(err as Error).message}`);
+  console.error(`Beanlens: unexpected error — ${(err as Error).message}`);
   process.exitCode = 1;
 });

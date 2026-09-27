@@ -25,7 +25,7 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-/** True when a version is a build property, range or other expression SpringLens cannot evaluate statically. */
+/** True when a version is a build property, range or other expression Beanlens cannot evaluate statically. */
 export function isUnresolvedVersion(version: string): boolean {
   return /[${}\[\](),]/.test(version) || !/^\d/.test(version);
 }
@@ -111,7 +111,7 @@ export function assessDependencies(deps: Dependency[]): RiskFinding[] {
           dependency: dep,
           severity: "advisory",
           message:
-            `Version \`${dep.version}\` is a build property or range that SpringLens ` +
+            `Version \`${dep.version}\` is a build property or range that Beanlens ` +
             `can't resolve — check by hand that ${dep.artifactId} is on a safe release ` +
             `(${rule.hint}).`,
         });

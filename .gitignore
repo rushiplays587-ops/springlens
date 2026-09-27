@@ -3,8 +3,8 @@ dist/
 *.log
 .DS_Store
 .env
-springlens-report.md
-springlens-report.html
+beanlens-report.md
+beanlens-report.html
 
 # Local coordination status (repo is public; keep private)
 STATUS.md
