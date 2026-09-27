@@ -1,28 +1,29 @@
-# SpringLens
+# Beanlens
 
 **Point it at a Java/Spring Boot repo you just inherited; get an architecture map, dependency-risk flags and config summary in one report. Runs locally, no AI needed.**
 
 ```bash
 git clone https://github.com/rushiplays587-ops/springlens.git
 cd springlens && npm install && npm run build
-node dist/cli.js ./path-to-spring-boot-repo     # writes springlens-report.md into that repo
+node dist/cli.js ./path-to-spring-boot-repo     # writes beanlens-report.md into that repo
 ```
 
 Built by a practicing Java tech lead, for teams inheriting Spring Boot systems
 they didn't write. Generic AI code-onboarding tools (Swimm, DeepWiki, Glean,
-and others) are language-agnostic; SpringLens is built for one stack. It reads
+and others) are language-agnostic; Beanlens is built for one stack. It reads
 Spring's own vocabulary — stereotype annotations, endpoint mappings, bean
 wiring — instead of guessing.
 
-> **Unofficial.** SpringLens is an independent open-source project. It is not
-> affiliated with, or endorsed by, the Spring project or Broadcom. "Spring" is a
-> trademark of its owner.
+> **Unofficial.** Beanlens is an independent open-source project. It is not
+> affiliated with, endorsed by or sponsored by Broadcom, VMware or the Spring
+> project. "Spring" and "Spring Boot" are trademarks of their owner and are used
+> here only to describe the kind of code Beanlens analyses.
 
 ## Install
 
 - **From source** (works today): the three commands above. Needs Node 18+.
 - **From npm**: not published yet. Once it is, it will be
-  `npm install -g springlens` (or `npx springlens <repo>`).
+  `npm install -g beanlens` (or `npx beanlens <repo>`).
 
 ## Example
 
@@ -46,7 +47,7 @@ Depends on: AuthService
 And `ask`, which is local keyword search (no AI unless you pass `--ai`):
 
 ```text
-$ springlens ask test-fixture-large "where is user login handled"
+$ beanlens ask test-fixture-large "where is user login handled"
 1. AuthController (controller) — src/main/java/com/shop/web/AuthController.java
    Endpoints: POST /auth/login -> login(), POST /auth/logout -> logout()
    Depends on: AuthService
@@ -60,7 +61,7 @@ $ springlens ask test-fixture-large "where is user login handled"
 
 ## What it does today (v0.1)
 
-Point it at a Spring Boot repo and it writes `springlens-report.md`:
+Point it at a Spring Boot repo and it writes `beanlens-report.md`:
 
 - **Architecture map** — every controller, controller advice, service,
   repository (including Spring Data interfaces), entity, configuration and
@@ -85,10 +86,10 @@ Point it at a Spring Boot repo and it writes `springlens-report.md`:
   `@ConfigurationProperties(prefix = ...)` or read `@Value("${...}")` are linked
   to the keys they use, and keys no scanned file defines are flagged. Secrets are
   redacted (see [Configuration files](#configuration-files)).
-- **HTML report** — `--html` also writes `springlens-report.html`, the same
+- **HTML report** — `--html` also writes `beanlens-report.html`, the same
   report as one self-contained page (inline styles, no scripts, no external
   requests), readable on screen and in print.
-- **Ask the codebase** — `springlens ask <repo> "<question>"` ranks the repo's
+- **Ask the codebase** — `beanlens ask <repo> "<question>"` ranks the repo's
   classes and config files against your question and prints the best matches,
   locally (see [Asking questions](#asking-questions)).
 
@@ -103,7 +104,7 @@ two rules above, and evaluation of Spring profiles. See the [Roadmap](#roadmap).
 # local structural report — nothing leaves your machine:
 npm start -- ./path-to-your-spring-boot-repo
 
-# also write springlens-report.html (self-contained page, nothing leaves your machine):
+# also write beanlens-report.html (self-contained page, nothing leaves your machine):
 npm start -- ./path-to-your-spring-boot-repo --html
 
 # also generate AI narrative (sends class source to Anthropic — see Privacy):
@@ -111,8 +112,8 @@ export ANTHROPIC_API_KEY=sk-ant-...
 npm start -- ./path-to-your-spring-boot-repo --ai
 ```
 
-The report is written to `springlens-report.md` inside the scanned repo (and
-`springlens-report.html` with `--html`). It lists the scanned directory's name
+The report is written to `beanlens-report.md` inside the scanned repo (and
+`beanlens-report.html` with `--html`). It lists the scanned directory's name
 only, not absolute paths. Everything taken from the repo — class names, paths,
 config keys and values — is treated as untrusted text: it is escaped in the HTML
 and placed in code spans in the Markdown, and the HTML page carries a
@@ -120,7 +121,7 @@ Content-Security-Policy that forbids scripts and network access.
 
 ## Configuration files
 
-SpringLens reads `application.*` and `bootstrap.*` files (also
+Beanlens reads `application.*` and `bootstrap.*` files (also
 `application-<profile>.*`) found anywhere in the repo except build output and
 `src/test`. YAML is parsed with the [`yaml`](https://github.com/eemeli/yaml)
 package (the tool's one runtime dependency besides the Anthropic SDK; it has no
@@ -128,7 +129,7 @@ dependencies of its own), so anchors, multi-line strings, lists and
 multi-document files are handled properly. `.properties` files, including
 Spring's `#---` document separator, use a small dedicated reader.
 
-Files are shown **as written**. SpringLens does not evaluate Spring profiles,
+Files are shown **as written**. Beanlens does not evaluate Spring profiles,
 merge files, expand `${...}` placeholders, resolve environment variables or fetch
 from a config server: a value may be overridden at runtime, and a key missing from
 the scanned files may still be set elsewhere. Gateway routes are read from
@@ -169,7 +170,7 @@ npm start -- ask ./path-to-your-spring-boot-repo "where is user login handled"
 npm start -- ask ./path-to-your-spring-boot-repo "which class talks to the database"
 ```
 
-**Default mode is fully local.** SpringLens indexes every class it found (name,
+**Default mode is fully local.** Beanlens indexes every class it found (name,
 kind, annotations, endpoint paths and handler names, injected dependencies,
 file path and source words) and every config file (application name, port,
 routes, datasource, keys and values), so questions like "how does the api
@@ -197,7 +198,7 @@ What it can and cannot do:
   related words (for example *database* also looks for repositories and JPA), but
   a class that uses different words from your question can be missed. Name things
   the way the code does when you can.
-- It only knows the classes SpringLens extracts (Spring-annotated classes; see
+- It only knows the classes Beanlens extracts (Spring-annotated classes; see
   the limitations below), so plain helper classes without a Spring annotation are
   not searchable.
 - The AI answer sees only the retrieved classes, not the whole repo, and is told
@@ -208,7 +209,7 @@ What it can and cannot do:
 
 ## Privacy
 
-By default SpringLens is entirely local, including `ask`. With `--ai` it sends each annotated
+By default Beanlens is entirely local, including `ask`. With `--ai` it sends each annotated
 class's source (up to 4,000 characters per class, **string literals
 included** — so URLs, connection strings or keys hard-coded in a class would
 be sent) to the Anthropic API, and prints what it is about to send. AI is
