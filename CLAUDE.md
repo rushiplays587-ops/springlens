@@ -1,8 +1,8 @@
-# SpringLens — project context for Claude Code
+# Beanlens — project context for Claude Code
 
 ## What this is
 An open-source (MIT) TypeScript/Node CLI that reads a Java/Spring Boot repo and
-writes `springlens-report.md`: an architecture map (controllers, services,
+writes `beanlens-report.md`: an architecture map (controllers, services,
 repositories, entities, endpoints, who-depends-on-whom), a curated
 dependency-risk section, and optional AI-written per-class explanations.
 Built for engineers who have just inherited a Spring Boot codebase.
@@ -12,7 +12,7 @@ Built for engineers who have just inherited a Spring Boot codebase.
 npm install
 npm run build                      # tsc -> dist/
 npm test                           # tsc, then node --test on the listed dist/*.test.js files
-npm start -- <path-to-repo> [--ai] # writes springlens-report.md into <path-to-repo>
+npm start -- <path-to-repo> [--ai] # writes beanlens-report.md into <path-to-repo>
 ```
 `node --test` must be given explicit `.js` file paths, not a directory: a bare
 directory argument breaks under Git Bash/MSYS on Windows. New test files must
@@ -32,7 +32,7 @@ be added to the `test` script in `package.json` or they will not run.
   (uses the one runtime dependency, `yaml`, with no custom tags)
 - `redact.ts` — secret redaction for config values; runs at parse time and
   again when any prompt is built
-- `ask.ts` — local BM25 retrieval for `springlens ask` (pure functions)
+- `ask.ts` — local BM25 retrieval for `beanlens ask` (pure functions)
 - `cli.ts` — argument handling and the run flow (`report`, `ask`, `--ai`, `--html`)
 - `model.ts` — shared types
 
