@@ -3,8 +3,8 @@
 **Point it at a Java/Spring Boot repo you just inherited; get an architecture map, dependency-risk flags and config summary in one report. Runs locally, no AI needed.**
 
 ```bash
-git clone https://github.com/rushiplays587-ops/springlens.git
-cd springlens && npm install && npm run build
+git clone https://github.com/rushiplays587-ops/beanlens.git
+cd beanlens && npm install && npm run build
 node dist/cli.js ./path-to-spring-boot-repo     # writes beanlens-report.md into that repo
 ```
 

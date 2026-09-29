@@ -12,13 +12,13 @@
     "static-analysis",
     "cli"
   ],
-  "homepage": "https://github.com/rushiplays587-ops/springlens#readme",
+  "homepage": "https://github.com/rushiplays587-ops/beanlens#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rushiplays587-ops/springlens.git"
+    "url": "git+https://github.com/rushiplays587-ops/beanlens.git"
   },
   "bugs": {
-    "url": "https://github.com/rushiplays587-ops/springlens/issues"
+    "url": "https://github.com/rushiplays587-ops/beanlens/issues"
   },
   "license": "MIT",
   "type": "module",
